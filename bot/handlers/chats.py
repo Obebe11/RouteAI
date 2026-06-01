@@ -42,7 +42,11 @@ _HELP = (
     "/temp &lt;0–2&gt; — температура\n"
     "/setkey &lt;ключ&gt; — свой OpenRouter-ключ\n\n"
     "Просто напишите сообщение — отвечает активная модель.\n"
-    "Внизу есть кнопки для быстрого доступа к действиям."
+    "Внизу есть кнопки для быстрого доступа к действиям.\n\n"
+    "📣 Новости и анонсы — в нашем "
+    "<a href=\"https://t.me/obebi4\">Telegram-канале</a>.\n"
+    "💻 Исходный код проекта открыт на "
+    "<a href=\"https://github.com/Obebe11/orbot\">GitHub</a>."
 )
 
 
@@ -50,13 +54,13 @@ _HELP = (
 async def cmd_start(message: Message) -> None:
     await db.ensure_user(message.from_user.id)
     reset_session(message.from_user.id)
-    await message.answer(_HELP, reply_markup=main_menu())
+    await message.answer(_HELP, reply_markup=main_menu(), disable_web_page_preview=True)
 
 
 @router.message(Command("help"))
 @router.message(F.text == BTN_HELP)
 async def cmd_help(message: Message) -> None:
-    await message.answer(_HELP, reply_markup=main_menu())
+    await message.answer(_HELP, reply_markup=main_menu(), disable_web_page_preview=True)
 
 
 @router.message(Command("new"))
