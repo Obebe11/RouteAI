@@ -35,17 +35,30 @@ class OpenRouterClient:
         data = resp.json().get("data", [])
         free = []
         for m in data:
-            # ВАЖНО (защита от списания денег): бесплатными считаем ТОЛЬКО
-            # модели с суффиксом ":free" — это единственный надёжный маркер
-            # OpenRouter. Эвристику «нулевой цены» НЕ используем: preview/аудио
-            # модели (напр. google/lyria-*) показывают нулевые prompt/completion,
-            # но реально тарифицируются по другим полям и списывают баланс.
-            if not m.get("id", "").endswith(":free"):
-                continue
-            # Доп. страховка: отбрасываем, если хоть одно поле цены ненулевое.
+            # ЗАЩИТА ОТ СПИСАНИЯ ДЕНЕГ. Цена в API ненадёжна: preview/медиа-модели
+            # (напр. google/lyria-*) показывают нулевые prompt/completion, но
+            # реально тарифицируют генерацию аудио/картинок по скрытым полям.
             pricing = m.get("pricing") or {}
-            if any(str(v) not in ("0", "0.0") for v in pricing.values() if v is not None):
+            nonzero = any(
+                str(v) not in ("0", "0.0") for v in pricing.values() if v is not None
+            )
+            # openrouter/free показываем отдельной закреплённой кнопкой
+            # «Случайная модель», в общий список не дублируем.
+            if m.get("id") == "openrouter/free":
                 continue
+            out = set((m.get("architecture") or {}).get("output_modalities") or ["text"])
+            is_free_suffix = m.get("id", "").endswith(":free")
+
+            if is_free_suffix:
+                # ":free" — явный бесплатный тариф OpenRouter (+ страховка по цене).
+                if nonzero:
+                    continue
+            else:
+                # Без ":free" пускаем ТОЛЬКО чисто текстовые модели с нулевой ценой
+                # (owl-alpha и подобные cloaked-превью). Любой медиа-вывод
+                # (audio/image/video) = потенциальная плата → исключаем.
+                if out - {"text"} or nonzero:
+                    continue
             free.append(m)
 
         result = [
