@@ -28,5 +28,6 @@ DB_PATH: str = os.getenv("DB_PATH", "orbot.db")
 MODELS_CACHE_TTL_HOURS: float = float(os.getenv("MODELS_CACHE_TTL_HOURS", "25"))
 # Сколько последних не-system сообщений отправлять модели.
 HISTORY_MAX_MESSAGES: int = int(os.getenv("HISTORY_MAX_MESSAGES", "20"))
-# Модель по умолчанию для новых чатов.
-DEFAULT_MODEL: str = os.getenv("DEFAULT_MODEL", "deepseek/deepseek-r1:free")
+# Модель по умолчанию для новых чатов. openrouter/free — мета-модель,
+# которая всегда доступна и маршрутизирует только на бесплатные модели.
+DEFAULT_MODEL: str = os.getenv("DEFAULT_MODEL", "openrouter/free")

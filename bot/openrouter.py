@@ -35,12 +35,18 @@ class OpenRouterClient:
         data = resp.json().get("data", [])
         free = []
         for m in data:
-            if m.get("id", "").endswith(":free"):
-                free.append(m)
+            # ВАЖНО (защита от списания денег): бесплатными считаем ТОЛЬКО
+            # модели с суффиксом ":free" — это единственный надёжный маркер
+            # OpenRouter. Эвристику «нулевой цены» НЕ используем: preview/аудио
+            # модели (напр. google/lyria-*) показывают нулевые prompt/completion,
+            # но реально тарифицируются по другим полям и списывают баланс.
+            if not m.get("id", "").endswith(":free"):
                 continue
-            pricing = m.get("pricing", {})
-            if pricing.get("prompt") == "0" and pricing.get("completion") == "0":
-                free.append(m)
+            # Доп. страховка: отбрасываем, если хоть одно поле цены ненулевое.
+            pricing = m.get("pricing") or {}
+            if any(str(v) not in ("0", "0.0") for v in pricing.values() if v is not None):
+                continue
+            free.append(m)
 
         result = [
             {
