@@ -1,6 +1,7 @@
 """Команды/кнопки настройки: модель, аудио-вкладка, промт, температура, ключ."""
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -306,10 +307,14 @@ async def cb_settemp(call: CallbackQuery) -> None:
     value = float(call.data.split(":", 1)[1])
     session = get_session(call.from_user.id)
     session.temperature = value
-    await call.message.edit_text(
-        await _settings_text(call.from_user.id),
-        reply_markup=_settings_keyboard(value),
-    )
+    try:
+        await call.message.edit_text(
+            await _settings_text(call.from_user.id),
+            reply_markup=_settings_keyboard(value),
+        )
+    except TelegramBadRequest:
+        # Повторный тап той же температуры — контент не изменился, это норм.
+        pass
     await call.answer(f"Температура → {value}")
 
 
