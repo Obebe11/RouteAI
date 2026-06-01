@@ -1,10 +1,12 @@
-"""Основной обработчик: текст пользователя → ответ активной модели (стрим).
+"""Основной обработчик: текст/фото пользователя → ответ модели (стрим).
 
 Разговор хранится только в памяти (сессии) и НЕ пишется в БД до /save.
 """
 
 import asyncio
+import base64
 import time
+from io import BytesIO
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -32,12 +34,10 @@ def _build_messages(session: Session) -> list[dict]:
     return trim_history(msgs, config.HISTORY_MAX_MESSAGES)
 
 
-@router.message(F.text & ~F.text.startswith("/"))
-async def on_text(message: Message) -> None:
+async def _respond(message: Message, session: Session, user_content) -> None:
+    """Добавить сообщение пользователя в сессию и отдать ответ модели стримом."""
     user_id = message.from_user.id
-    session = await active_session(user_id)
-
-    session.add("user", message.text)
+    session.add("user", user_content)
     payload = _build_messages(session)
 
     key = await user_api_key(user_id)
@@ -70,7 +70,6 @@ async def on_text(message: Message) -> None:
             acc += chunk
             await flush()
     except OpenRouterError as exc:
-        # Откатываем последнее сообщение пользователя, чтобы не копить мусор.
         session.messages.pop()
         await placeholder.edit_text(f"⚠️ Ошибка модели:\n{exc}")
         return
@@ -98,3 +97,53 @@ async def on_text(message: Message) -> None:
     for extra in parts[1:]:
         await asyncio.sleep(0.4)
         await message.answer(extra, parse_mode=None)
+
+
+@router.message(F.text & ~F.text.startswith("/"))
+async def on_text(message: Message) -> None:
+    session = await active_session(message.from_user.id)
+    await _respond(message, session, message.text)
+
+
+def _strip_image(content) -> str:
+    """Текстовая выжимка из мультимодального content (без base64-картинки)."""
+    if isinstance(content, list):
+        text = next(
+            (i.get("text") for i in content
+             if isinstance(i, dict) and i.get("type") == "text"),
+            "",
+        )
+        return f"[изображение] {text}".strip()
+    return content
+
+
+@router.message(F.photo)
+async def on_photo(message: Message) -> None:
+    session = await active_session(message.from_user.id)
+
+    # Скачиваем самое крупное превью фото В ПАМЯТЬ (на диск не пишем).
+    photo = message.photo[-1]
+    buf = BytesIO()
+    await message.bot.download(photo, destination=buf)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    buf.close()
+    data_url = f"data:image/jpeg;base64,{b64}"
+
+    # Приватность: сразу удаляем сообщение с фото из чата.
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    caption = (message.caption or "").strip() or "Что на этом изображении?"
+    content = [
+        {"type": "text", "text": caption},
+        {"type": "image_url", "image_url": {"url": data_url}},
+    ]
+    await _respond(message, session, content)
+
+    # Приватность: убираем base64-картинку из памяти сессии после ответа,
+    # оставляя только текстовую пометку (в RAM картинка больше не висит).
+    for m in session.messages:
+        if m.get("role") == "user" and isinstance(m.get("content"), list):
+            m["content"] = _strip_image(m["content"])

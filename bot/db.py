@@ -7,6 +7,25 @@ import aiosqlite
 from . import config
 from .crypto import decrypt, decrypt_with, encrypt, encrypt_with
 
+
+def _content_to_text(content) -> str:
+    """Приводит content сообщения к строке для хранения в БД.
+
+    Мультимодальный content (список с картинками) сохраняем как текстовую
+    часть + пометку [изображение] — сами картинки в истории не персистим.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(item.get("text", ""))
+            elif isinstance(item, dict) and item.get("type") == "image_url":
+                parts.append("[изображение]")
+        return " ".join(p for p in parts if p)
+    return str(content)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     user_id        INTEGER PRIMARY KEY,
@@ -190,7 +209,7 @@ class DB:
         enc = (lambda t: encrypt_with(fernet, t)) if fernet is not None else encrypt
         await self.conn.executemany(
             "INSERT INTO messages(chat_id, role, content) VALUES (?, ?, ?)",
-            [(chat_id, m["role"], enc(m["content"])) for m in messages],
+            [(chat_id, m["role"], enc(_content_to_text(m["content"]))) for m in messages],
         )
         await self.conn.commit()
         return chat_id
