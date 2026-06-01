@@ -56,9 +56,6 @@ class ModelsCache:
         """Принудительно обновить кэш (для прелоада и ночного обновления)."""
         await self.get(force=True)
 
-    def has(self, model_id: str) -> bool:
-        return any(m["id"] == model_id for m in self._models)
-
 
 # Мета-модель OpenRouter «случайная»: сама маршрутизирует на случайную
 # бесплатную модель. Закреплена вверху списка выбора.

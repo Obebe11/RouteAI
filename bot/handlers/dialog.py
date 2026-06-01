@@ -123,11 +123,12 @@ async def _respond(message: Message, session: Session, user_content) -> None:
             await flush()
     except OpenRouterError as exc:
         session.messages.pop()
-        await placeholder.edit_text(f"⚠️ Ошибка модели:\n{exc}")
+        # parse_mode=None: текст ошибки может содержать < & и сломать HTML-парсер.
+        await placeholder.edit_text(f"⚠️ Ошибка модели:\n{exc}", parse_mode=None)
         return
     except Exception as exc:  # noqa: BLE001 — не роняем бота на одном запросе
         session.messages.pop()
-        await placeholder.edit_text(f"⚠️ Непредвиденная ошибка: {exc}")
+        await placeholder.edit_text(f"⚠️ Непредвиденная ошибка: {exc}", parse_mode=None)
         return
 
     acc = clean_response(acc)

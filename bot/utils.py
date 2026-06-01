@@ -1,7 +1,5 @@
 """Вспомогательные функции для Telegram-бота."""
 
-_MD2_SPECIAL = set("_*[]()~`>#+-=|{}.!")
-
 
 def split_message(text: str, limit: int = 4096) -> list[str]:
     """Режет текст на куски <= limit символов по границам абзацев/строк/слов."""
@@ -52,11 +50,6 @@ def split_message(text: str, limit: int = 4096) -> list[str]:
 
     flush()
     return chunks
-
-
-def escape_markdown_v2(text: str) -> str:
-    """Экранирует спецсимволы для Telegram parse_mode=MarkdownV2."""
-    return "".join("\\" + ch if ch in _MD2_SPECIAL else ch for ch in text)
 
 
 # Служебные токены шаблонов чата, которые некоторые модели подмешивают в ответ.

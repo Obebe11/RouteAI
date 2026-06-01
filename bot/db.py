@@ -132,13 +132,6 @@ class DB:
         )
         await self.conn.commit()
 
-    async def set_active_chat(self, user_id: int, chat_id: int) -> None:
-        await self.conn.execute(
-            "UPDATE users SET active_chat_id = ? WHERE user_id = ?",
-            (chat_id, user_id),
-        )
-        await self.conn.commit()
-
     async def load_prompts(self, user_id: int) -> list[dict] | None:
         """Библиотека промтов пользователя (расшифрованная), либо None."""
         user = await self.get_user(user_id)
@@ -162,14 +155,6 @@ class DB:
 
     # ---- chats -----------------------------------------------------------
 
-    async def create_chat(self, user_id: int, title: str, model: str) -> int:
-        cur = await self.conn.execute(
-            "INSERT INTO chats(user_id, title, model) VALUES (?, ?, ?)",
-            (user_id, title, model),
-        )
-        await self.conn.commit()
-        return cur.lastrowid
-
     async def list_chats(self, user_id: int) -> list[aiosqlite.Row]:
         cur = await self.conn.execute(
             "SELECT * FROM chats WHERE user_id = ? ORDER BY id", (user_id,)
@@ -181,23 +166,6 @@ class DB:
             "SELECT * FROM chats WHERE id = ? AND user_id = ?", (chat_id, user_id)
         )
         return await cur.fetchone()
-
-    async def get_active_chat(self, user_id: int) -> aiosqlite.Row | None:
-        cur = await self.conn.execute(
-            "SELECT c.* FROM chats c "
-            "JOIN users u ON u.active_chat_id = c.id "
-            "WHERE u.user_id = ?",
-            (user_id,),
-        )
-        return await cur.fetchone()
-
-    async def update_chat_field(self, chat_id: int, field: str, value) -> None:
-        if field not in {"title", "model", "system_prompt", "temperature"}:
-            raise ValueError(f"Недопустимое поле: {field}")
-        await self.conn.execute(
-            f"UPDATE chats SET {field} = ? WHERE id = ?", (value, chat_id)
-        )
-        await self.conn.commit()
 
     async def save_session(
         self,
@@ -247,13 +215,6 @@ class DB:
         await self.conn.commit()
 
     # ---- messages --------------------------------------------------------
-
-    async def add_message(self, chat_id: int, role: str, content: str) -> None:
-        await self.conn.execute(
-            "INSERT INTO messages(chat_id, role, content) VALUES (?, ?, ?)",
-            (chat_id, role, encrypt(content)),
-        )
-        await self.conn.commit()
 
     async def get_messages(self, chat_id: int, fernet=None) -> list[dict]:
         cur = await self.conn.execute(

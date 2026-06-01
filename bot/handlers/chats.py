@@ -1,5 +1,6 @@
 """Управление разговором: новый временный, сохранение, список сохранённых."""
 
+import html
 from datetime import datetime
 
 from aiogram import F, Router
@@ -146,8 +147,8 @@ async def cmd_save(message: Message) -> None:
     verb = "обновлён" if was_update else "сохранён"
     lock_note = " 🔒 под паролем" if passphrase else ""
     await message.answer(
-        f"💾 Разговор {verb} как «{title}»{lock_note} ({len(session.messages)} сообщ.). "
-        "Открыть позже — /saved."
+        f"💾 Разговор {verb} как «{html.escape(title)}»{lock_note} "
+        f"({len(session.messages)} сообщ.). Открыть позже — /saved."
     )
 
 
@@ -200,8 +201,8 @@ async def cb_load(call: CallbackQuery) -> None:
         if not passphrase:
             await call.answer()
             await call.message.answer(
-                f"🔒 Чат «{chat['title']}» защищён паролем. Введите его командой "
-                "<code>/password ваш-пароль</code> и снова откройте чат."
+                f"🔒 Чат «{html.escape(chat['title'])}» защищён паролем. Введите его "
+                "командой <code>/password ваш-пароль</code> и снова откройте чат."
             )
             return
         fernet = crypto.derive_fernet(passphrase, chat["salt"])
@@ -227,7 +228,7 @@ async def cb_load(call: CallbackQuery) -> None:
     await call.message.edit_reply_markup(reply_markup=_saved_keyboard(chats, chat_id))
     await call.answer(f"Загружен «{chat['title']}»")
     await call.message.answer(
-        f"📂 Загружен чат «{chat['title']}» ({len(messages)} сообщ.). "
+        f"📂 Загружен чат «{html.escape(chat['title'])}» ({len(messages)} сообщ.). "
         "Продолжайте — /save обновит его."
     )
 
