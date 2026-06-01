@@ -23,8 +23,9 @@ DEFAULT_OPENROUTER_KEY: str = _require("OPENROUTER_API_KEY")
 ENCRYPTION_KEY: str = _require("ENCRYPTION_KEY")
 
 DB_PATH: str = os.getenv("DB_PATH", "orbot.db")
-# Как часто обновлять кэш списка free-моделей, в часах.
-MODELS_CACHE_TTL_HOURS: float = float(os.getenv("MODELS_CACHE_TTL_HOURS", "6"))
+# TTL кэша моделей (часы). Основное обновление — ночным планировщиком;
+# этот TTL лишь страхует от устаревания, если планировщик не сработал.
+MODELS_CACHE_TTL_HOURS: float = float(os.getenv("MODELS_CACHE_TTL_HOURS", "25"))
 # Сколько последних не-system сообщений отправлять модели.
 HISTORY_MAX_MESSAGES: int = int(os.getenv("HISTORY_MAX_MESSAGES", "20"))
 # Модель по умолчанию для новых чатов.

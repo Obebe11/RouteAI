@@ -77,21 +77,24 @@ def _tab_caption(audio: bool, count: int) -> str:
             f"🎵 <b>Аудио-модели</b> ({count})\n"
             "Генерируют звук, а не текст — в обычном чате недоступны, "
             "вкладка для ознакомления.\n"
-            "🟢 ≥95%  🟡 80–95%  🔴 <80%  ⚪ нет данных"
+            "🟢 ≥95%  🟡 80–95%  🔴 &lt;80%  ⚪ нет данных"
         )
     return (
         f"💬 <b>Текстовые модели</b> ({count}) — по аптайму ↓\n"
-        "🟢 ≥95%  🟡 80–95%  🔴 <80%  ⚪ нет данных\n\n"
+        "🟢 ≥95%  🟡 80–95%  🔴 &lt;80%  ⚪ нет данных\n\n"
         "Выберите модель для текущего разговора:"
     )
 
 
 async def _show_models(target: Message, audio: bool, page: int, edit: bool) -> None:
-    try:
-        all_models = await models_cache.get()
-    except OpenRouterError as exc:
-        await target.answer(f"Не удалось получить список моделей: {exc}")
-        return
+    all_models = models_cache.snapshot()
+    if not all_models:
+        # Кэш ещё пуст (например, прелоад при старте не удался) — грузим разово.
+        try:
+            all_models = await models_cache.get()
+        except OpenRouterError as exc:
+            await target.answer(f"Не удалось получить список моделей: {exc}")
+            return
     models = filter_models(all_models, audio)
     if not models:
         text = "🎵 Сейчас бесплатных аудио-моделей нет." if audio \
@@ -112,8 +115,7 @@ async def _show_models(target: Message, audio: bool, page: int, edit: bool) -> N
 @router.message(Command("models", "model"))
 @router.message(F.text == BTN_MODELS)
 async def cmd_models(message: Message) -> None:
-    note = await message.answer("Загружаю список моделей и их аптайм…")
-    await _show_models(note, audio=False, page=0, edit=True)
+    await _show_models(message, audio=False, page=0, edit=False)
 
 
 @router.callback_query(F.data.startswith("models:"))
@@ -127,8 +129,7 @@ async def cb_models_page(call: CallbackQuery) -> None:
 async def cb_pick_model(call: CallbackQuery) -> None:
     _, a, idx = call.data.split(":")
     audio = a == "1"
-    all_models = await models_cache.get()
-    models = filter_models(all_models, audio)
+    models = filter_models(models_cache.snapshot(), audio)
     idx = int(idx)
     if idx >= len(models):
         await call.answer("Список обновился, откройте «Модели» заново.", show_alert=True)

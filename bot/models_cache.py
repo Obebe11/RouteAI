@@ -48,6 +48,14 @@ class ModelsCache:
 
         await asyncio.gather(*(one(m) for m in models), return_exceptions=True)
 
+    def snapshot(self) -> list[dict]:
+        """Мгновенно вернуть текущий кэш без обращения к сети."""
+        return self._models
+
+    async def refresh(self) -> None:
+        """Принудительно обновить кэш (для прелоада и ночного обновления)."""
+        await self.get(force=True)
+
     def has(self, model_id: str) -> bool:
         return any(m["id"] == model_id for m in self._models)
 
