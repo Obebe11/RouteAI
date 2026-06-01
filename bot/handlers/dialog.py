@@ -57,6 +57,26 @@ def _reinforce_user(msg: dict, system_prompt: str) -> dict:
     return msg
 
 
+def _friendly_error(exc: OpenRouterError) -> str:
+    """Понятное сообщение об ошибке вместо сырого JSON от OpenRouter."""
+    s = str(exc)
+    code = s.split(":", 1)[0].strip()
+    if code == "429":
+        return (
+            "⏳ Модель сейчас перегружена (превышен лимит бесплатных запросов).\n"
+            "• Попробуйте ещё раз через минуту,\n"
+            "• или смените модель в «🤖 Модели»,\n"
+            "• или подключите свой ключ OpenRouter (/setkey) — он снимает общие лимиты."
+        )
+    if code in ("401", "403"):
+        return "🔑 Проблема с ключом OpenRouter. Проверьте /setkey или вернитесь на общий ключ."
+    if code == "402":
+        return "💳 На ключе OpenRouter закончились средства. Смените модель или ключ."
+    if code in ("404", "400"):
+        return "🚫 Эта модель сейчас недоступна. Выберите другую в «🤖 Модели»."
+    return "⚠️ Модель вернула ошибку. Попробуйте ещё раз или смените модель в «🤖 Модели»."
+
+
 def _build_messages(session: Session) -> list[dict]:
     msgs: list[dict] = []
     system = session.effective_system()
@@ -115,21 +135,34 @@ async def _respond(message: Message, session: Session, user_content) -> None:
         except TelegramBadRequest:
             pass
 
-    try:
-        async for chunk in client.chat_stream(
-            session.model, payload, api_key=key, temperature=session.temperature
-        ):
-            acc += chunk
-            await flush()
-    except OpenRouterError as exc:
-        session.messages.pop()
-        # parse_mode=None: текст ошибки может содержать < & и сломать HTML-парсер.
-        await placeholder.edit_text(f"⚠️ Ошибка модели:\n{exc}", parse_mode=None)
-        return
-    except Exception as exc:  # noqa: BLE001 — не роняем бота на одном запросе
-        session.messages.pop()
-        await placeholder.edit_text(f"⚠️ Непредвиденная ошибка: {exc}", parse_mode=None)
-        return
+    attempt = 0
+    while True:
+        try:
+            async for chunk in client.chat_stream(
+                session.model, payload, api_key=key, temperature=session.temperature
+            ):
+                acc += chunk
+                await flush()
+            break
+        except OpenRouterError as exc:
+            # 429 (rate-limit) до начала ответа — транзиентно, тихо повторяем.
+            if str(exc).startswith("429") and not acc and attempt < 2:
+                attempt += 1
+                try:
+                    await placeholder.edit_text(
+                        f"⏳ Модель занята, повтор {attempt}/2…", parse_mode=None
+                    )
+                except TelegramBadRequest:
+                    pass
+                await asyncio.sleep(2.5)
+                continue
+            session.messages.pop()
+            await placeholder.edit_text(_friendly_error(exc), parse_mode=None)
+            return
+        except Exception as exc:  # noqa: BLE001 — не роняем бота на одном запросе
+            session.messages.pop()
+            await placeholder.edit_text(f"⚠️ Непредвиденная ошибка: {exc}", parse_mode=None)
+            return
 
     acc = clean_response(acc)
     if not acc.strip():
@@ -217,19 +250,14 @@ def _strip_image(content) -> str:
 async def on_photo(message: Message) -> None:
     session = await active_session(message.from_user.id)
 
-    # Скачиваем самое крупное превью фото В ПАМЯТЬ (на диск не пишем).
+    # Скачиваем самое крупное превью фото В ПАМЯТЬ. На диск/сервер не пишем,
+    # сообщение в чате НЕ удаляем — оно остаётся у пользователя.
     photo = message.photo[-1]
     buf = BytesIO()
     await message.bot.download(photo, destination=buf)
     b64 = base64.b64encode(buf.getvalue()).decode()
     buf.close()
     data_url = f"data:image/jpeg;base64,{b64}"
-
-    # Приватность: сразу удаляем сообщение с фото из чата.
-    try:
-        await message.delete()
-    except Exception:
-        pass
 
     caption = (message.caption or "").strip() or "Что на этом изображении?"
     content = [
