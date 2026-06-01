@@ -29,6 +29,33 @@ router = Router()
 
 _PAGE_SIZE = 8
 _TEMP_PRESETS = (0.3, 0.7, 1.0, 1.3)
+# Эмодзи-метки пресетов температуры для наглядности на кнопках.
+_TEMP_EMOJI = {0.3: "🎯", 0.7: "⚖️", 1.0: "🎨", 1.3: "🎲"}
+
+TEMP_EXPLAIN = (
+    "🌡 <b>Температура</b> — насколько ответы предсказуемые или творческие.\n"
+    "• <b>0–0.4</b> 🎯 точные, чёткие, повторяемые (факты, код, инструкции)\n"
+    "• <b>0.5–0.9</b> ⚖️ золотая середина для обычного общения\n"
+    "• <b>1.0–2.0</b> 🎨 больше фантазии и разнообразия, но менее предсказуемо\n"
+    "(идеи, тексты, креатив)"
+)
+
+SYSTEM_EXPLAIN = (
+    "✏️ <b>Системный промт</b> — постоянная инструкция модели: кто она и как "
+    "должна отвечать. Задаётся один раз и действует на весь разговор.\n\n"
+    "Примеры:\n"
+    "• «Отвечай кратко и только по-русски»\n"
+    "• «Ты опытный программист на Python»\n"
+    "• «Объясняй простыми словами, как для новичка»"
+)
+
+
+def _temp_word(value: float) -> str:
+    if value < 0.5:
+        return "🎯 точные"
+    if value < 1.0:
+        return "⚖️ сбалансированные"
+    return "🎨 творческие"
 
 KEY_GUIDE = (
     "🔑 <b>Как подключить свой ключ OpenRouter — пошагово:</b>\n\n"
@@ -195,16 +222,19 @@ async def _settings_text(user_id: int) -> str:
         f"<b>⚙️ Настройки разговора</b>\n"
         f"Состояние: {title}\n\n"
         f"🤖 Модель: <code>{session.model}</code>\n"
-        f"🌡 Температура: {session.temperature}\n"
+        f"🌡 Температура: {session.temperature} ({_temp_word(session.temperature)}) "
+        "— случайность/творческость ответов\n"
         f"🔑 Ключ: {key_state}\n"
-        f"✏️ Системный промт: {sys_prompt}"
+        f"✏️ Системный промт: {sys_prompt}\n"
+        "<i>(промт — как модель себя ведёт; кнопки ниже всё поясняют)</i>"
     )
 
 
 def _settings_keyboard(active_temp: float) -> InlineKeyboardMarkup:
     temp_row = [
         InlineKeyboardButton(
-            text=("• " if abs(active_temp - t) < 1e-6 else "") + str(t),
+            text=("• " if abs(active_temp - t) < 1e-6 else "")
+            + f"{_TEMP_EMOJI[t]} {t}",
             callback_data=f"settemp:{t}",
         )
         for t in _TEMP_PRESETS
@@ -253,7 +283,8 @@ async def cb_settemp(call: CallbackQuery) -> None:
 async def cb_hint_system(call: CallbackQuery) -> None:
     await call.answer()
     await call.message.answer(
-        "✏️ Задать системный промт:\n<code>/system ваш текст</code>\n"
+        SYSTEM_EXPLAIN + "\n\n"
+        "Задать: <code>/system ваш текст</code>\n"
         "Очистить: <code>/system -</code>"
     )
 
@@ -274,7 +305,8 @@ async def cmd_system(message: Message) -> None:
     if not text:
         cur = session.system_prompt or "(пусто)"
         await message.answer(
-            f"Текущий системный промт:\n<code>{cur}</code>\n\n"
+            SYSTEM_EXPLAIN + "\n\n"
+            f"Сейчас: <code>{cur}</code>\n\n"
             "Чтобы задать: <code>/system ваш текст</code>\n"
             "Очистить: <code>/system -</code>"
         )
@@ -291,8 +323,9 @@ async def cmd_temp(message: Message) -> None:
     arg = message.text.partition(" ")[2].strip().replace(",", ".")
     if not arg:
         await message.answer(
-            f"Текущая температура: {session.temperature}\n"
-            "Задать: <code>/temp 0.7</code> (0.0–2.0)"
+            TEMP_EXPLAIN + "\n\n"
+            f"Сейчас: {session.temperature} ({_temp_word(session.temperature)})\n"
+            "Задать: <code>/temp 0.7</code> (диапазон 0.0–2.0)"
         )
         return
     try:
