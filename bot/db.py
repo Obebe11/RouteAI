@@ -1,5 +1,6 @@
 """Слой доступа к данным (SQLite через aiosqlite)."""
 
+import json
 import os
 
 import aiosqlite
@@ -30,7 +31,8 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     user_id        INTEGER PRIMARY KEY,
     openrouter_key TEXT,
-    active_chat_id INTEGER
+    active_chat_id INTEGER,
+    prompts_json   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS chats (
@@ -90,6 +92,10 @@ class DB:
         ):
             if name not in cols:
                 await self._conn.execute(ddl)
+        cur = await self._conn.execute("PRAGMA table_info(users)")
+        ucols = {r["name"] for r in await cur.fetchall()}
+        if "prompts_json" not in ucols:
+            await self._conn.execute("ALTER TABLE users ADD COLUMN prompts_json TEXT")
 
     async def close(self) -> None:
         if self._conn:
@@ -130,6 +136,27 @@ class DB:
         await self.conn.execute(
             "UPDATE users SET active_chat_id = ? WHERE user_id = ?",
             (chat_id, user_id),
+        )
+        await self.conn.commit()
+
+    async def load_prompts(self, user_id: int) -> list[dict] | None:
+        """Библиотека промтов пользователя (расшифрованная), либо None."""
+        user = await self.get_user(user_id)
+        if not user or not user["prompts_json"]:
+            return None
+        raw = decrypt(user["prompts_json"])
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, list) else None
+        except (ValueError, TypeError):
+            return None
+
+    async def save_prompts(self, user_id: int, prompts: list[dict]) -> None:
+        blob = encrypt(json.dumps(prompts, ensure_ascii=False))
+        await self.conn.execute(
+            "UPDATE users SET prompts_json = ? WHERE user_id = ?", (blob, user_id)
         )
         await self.conn.commit()
 

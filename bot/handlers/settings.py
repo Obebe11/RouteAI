@@ -30,7 +30,7 @@ from ..models_cache import (
 from ..openrouter import OpenRouterError
 from ..runtime import client, models_cache, user_api_key
 from ..session import Prompt, clear_passphrase, get_session, set_passphrase
-from .common import active_session
+from .common import active_session, persist_prompts
 
 
 class KeyForm(StatesGroup):
@@ -317,7 +317,7 @@ def _prompts_menu_keyboard(session) -> InlineKeyboardMarkup:
 
 
 async def _show_prompts_menu(message: Message, user_id: int, edit: bool) -> None:
-    session = get_session(user_id)
+    session = await active_session(user_id)
     text = _prompts_menu_text(session)
     kb = _prompts_menu_keyboard(session)
     try:
@@ -337,7 +337,7 @@ async def cb_prompts_menu(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "back_settings")
 async def cb_back_settings(call: CallbackQuery) -> None:
-    session = get_session(call.from_user.id)
+    session = await active_session(call.from_user.id)
     try:
         await call.message.edit_text(
             await _settings_text(call.from_user.id),
@@ -351,9 +351,10 @@ async def cb_back_settings(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("pt:"))
 async def cb_prompt_toggle(call: CallbackQuery) -> None:
     i = int(call.data.split(":", 1)[1])
-    session = get_session(call.from_user.id)
+    session = await active_session(call.from_user.id)
     if 0 <= i < len(session.prompts):
         session.prompts[i].active = not session.prompts[i].active
+        await persist_prompts(call.from_user.id, session)
     await _show_prompts_menu(call.message, call.from_user.id, edit=True)
     await call.answer()
 
@@ -361,9 +362,10 @@ async def cb_prompt_toggle(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("pd:"))
 async def cb_prompt_delete(call: CallbackQuery) -> None:
     i = int(call.data.split(":", 1)[1])
-    session = get_session(call.from_user.id)
+    session = await active_session(call.from_user.id)
     if 0 <= i < len(session.prompts) and not session.prompts[i].preset:
         session.prompts.pop(i)
+        await persist_prompts(call.from_user.id, session)
     await _show_prompts_menu(call.message, call.from_user.id, edit=True)
     await call.answer("Удалён")
 
@@ -382,7 +384,7 @@ async def cb_prompt_add(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("pe:"))
 async def cb_prompt_edit(call: CallbackQuery, state: FSMContext) -> None:
     i = int(call.data.split(":", 1)[1])
-    session = get_session(call.from_user.id)
+    session = await active_session(call.from_user.id)
     if not (0 <= i < len(session.prompts)):
         await call.answer("Промт не найден", show_alert=True)
         return
@@ -480,6 +482,7 @@ async def on_system_input(message: Message, state: FSMContext) -> None:
             f"✅ Промт добавлен и активен (всего {len(session.prompts)}). "
             "Управление — в ⚙️ Настройки → «📝 Промты»."
         )
+    await persist_prompts(message.from_user.id, session)
     await _show_prompts_menu(message, message.from_user.id, edit=False)
 
 
@@ -612,6 +615,7 @@ async def cmd_system(message: Message, state: FSMContext) -> None:
         return
     # С текстом — быстро добавляем новый промт.
     session.prompts.append(Prompt(text=text, active=True))
+    await persist_prompts(message.from_user.id, session)
     await message.answer(
         f"✅ Промт добавлен и активен (всего {len(session.prompts)}). "
         "Управление — /prompts или ⚙️ Настройки → «📝 Промты»."

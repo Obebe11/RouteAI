@@ -41,11 +41,26 @@ def default_prompts() -> list[Prompt]:
     return [Prompt(text=TG_FORMAT_PROMPT, active=True, preset=True, name=TG_FORMAT_NAME)]
 
 
+def prompt_to_dict(p: "Prompt") -> dict:
+    return {"text": p.text, "active": p.active, "preset": p.preset, "name": p.name}
+
+
+def prompt_from_dict(d: dict) -> "Prompt":
+    return Prompt(
+        text=d.get("text", ""),
+        active=bool(d.get("active", True)),
+        preset=bool(d.get("preset", False)),
+        name=d.get("name", ""),
+    )
+
+
 @dataclass
 class Session:
     model: str = config.DEFAULT_MODEL
     # Библиотека промтов: каждый со своим флагом active.
+    # Хранится персистентно в БД (per-user), грузится в active_session.
     prompts: list["Prompt"] = field(default_factory=default_prompts)
+    prompts_loaded: bool = False
     temperature: float = 0.7
     messages: list[dict] = field(default_factory=list)
     # Если сессия загружена из сохранённого чата — его id и название.
@@ -97,8 +112,13 @@ def get_session(user_id: int) -> Session:
 
 
 def reset_session(user_id: int) -> Session:
-    """Начать новый пустой временный разговор."""
+    """Начать новый пустой разговор, СОХРАНИВ библиотеку промтов пользователя."""
+    old = _sessions.get(user_id)
     s = Session()
+    if old is not None:
+        # Промты — это настройки пользователя, а не часть разговора: переносим.
+        s.prompts = old.prompts
+        s.prompts_loaded = old.prompts_loaded
     _sessions[user_id] = s
     return s
 
@@ -119,6 +139,7 @@ def load_into_session(
     s = Session(
         model=model,
         prompts=prompts,
+        prompts_loaded=True,
         temperature=temperature,
         messages=list(messages),
         saved_chat_id=chat_id,
