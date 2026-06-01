@@ -61,6 +61,17 @@ class OpenRouterClient:
         result.sort(key=lambda x: x["name"])
         return result
 
+    async def validate_key(self, api_key: str) -> bool:
+        """True, если ключ принимается OpenRouter (GET /api/v1/key → 200)."""
+        try:
+            async with httpx.AsyncClient(
+                timeout=15.0, headers={"Authorization": f"Bearer {api_key}"}
+            ) as client:
+                resp = await client.get("https://openrouter.ai/api/v1/key")
+        except httpx.HTTPError:
+            return False
+        return resp.status_code == 200
+
     async def free_endpoint_uptime(self, model_id: str, api_key: str | None = None) -> float | None:
         """Uptime (%) бесплатного эндпоинта модели за сутки, либо None если неизвестно."""
         key = self._resolve_key(api_key)

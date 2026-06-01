@@ -60,6 +60,20 @@ class ModelsCache:
         return any(m["id"] == model_id for m in self._models)
 
 
+# Псевдо-модель «случайная»: закреплена вверху списка. При отправке сообщения
+# подменяется на случайную бесплатную чат-модель.
+RANDOM_MODEL_ID = "openrouter/free"
+RANDOM_MODEL_LABEL = "🎲 Случайная модель"
+
+
+def pick_random_chat_model(models: list[dict]) -> dict | None:
+    """Случайная бесплатная модель, пригодная для текстового чата."""
+    import random
+
+    chat = [m for m in models if is_chat_category(model_category(m))]
+    return random.choice(chat) if chat else None
+
+
 # Категории моделей: (ключ, подпись для кнопки/заголовка). Порядок = порядок показа.
 CATEGORIES: list[tuple[str, str]] = [
     ("text", "💬 Текстовые"),

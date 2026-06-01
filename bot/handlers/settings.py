@@ -1,7 +1,9 @@
 """Команды/кнопки настройки: модель, аудио-вкладка, промт, температура, ключ."""
 
 from aiogram import F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -14,6 +16,8 @@ from ..keyboards import BTN_MODELS, BTN_SETTINGS
 from ..models_cache import (
     CATEGORIES,
     CATEGORY_LABEL,
+    RANDOM_MODEL_ID,
+    RANDOM_MODEL_LABEL,
     category_counts,
     filter_by_category,
     has_vision,
@@ -21,9 +25,13 @@ from ..models_cache import (
     uptime_emoji,
 )
 from ..openrouter import OpenRouterError
-from ..runtime import models_cache, user_api_key
+from ..runtime import client, models_cache, user_api_key
 from ..session import get_session
 from .common import active_session
+
+
+class KeyForm(StatesGroup):
+    waiting = State()
 
 router = Router()
 
@@ -98,7 +106,9 @@ async def _all_models(target: Message) -> list[dict] | None:
 
 
 def _categories_keyboard(counts: dict[str, int]) -> InlineKeyboardMarkup:
-    rows = [
+    # Закреплённая вверху псевдо-модель «случайная».
+    rows = [[InlineKeyboardButton(text=RANDOM_MODEL_LABEL, callback_data="pickrandom")]]
+    rows += [
         [InlineKeyboardButton(text=f"{label} ({counts[key]})", callback_data=f"cat:{key}:0")]
         for key, label in CATEGORIES
         if counts.get(key, 0) > 0
@@ -181,6 +191,17 @@ async def cb_categories(call: CallbackQuery) -> None:
     await call.answer()
 
 
+@router.callback_query(F.data == "pickrandom")
+async def cb_pick_random(call: CallbackQuery) -> None:
+    session = get_session(call.from_user.id)
+    session.model = RANDOM_MODEL_ID
+    await call.message.edit_text(
+        f"{RANDOM_MODEL_LABEL} выбрана — на каждый запрос будет случайная "
+        "бесплатная чат-модель."
+    )
+    await call.answer("Случайная модель")
+
+
 @router.callback_query(F.data.startswith("cat:"))
 async def cb_category(call: CallbackQuery) -> None:
     _, key, page = call.data.split(":")
@@ -218,10 +239,14 @@ async def _settings_text(user_id: int) -> str:
     if len(sys_prompt) > 200:
         sys_prompt = sys_prompt[:200] + "…"
     title = session.saved_title or "временный (не сохранён)"
+    model_disp = (
+        RANDOM_MODEL_LABEL if session.model == RANDOM_MODEL_ID
+        else f"<code>{session.model}</code>"
+    )
     return (
         f"<b>⚙️ Настройки разговора</b>\n"
         f"Состояние: {title}\n\n"
-        f"🤖 Модель: <code>{session.model}</code>\n"
+        f"🤖 Модель: {model_disp}\n"
         f"🌡 Температура: {session.temperature} ({_temp_word(session.temperature)}) "
         "— случайность/творческость ответов\n"
         f"🔑 Ключ: {key_state}\n"
@@ -289,10 +314,83 @@ async def cb_hint_system(call: CallbackQuery) -> None:
     )
 
 
+def _key_menu_keyboard(has_key: bool) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="⌨️ Ввести ключ", callback_data="key_enter")]]
+    if has_key:
+        rows.append([InlineKeyboardButton(text="🚫 Отозвать ключ", callback_data="key_revoke")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _show_key_menu(target: Message, user_id: int) -> None:
+    cur = await user_api_key(user_id)
+    state_line = (
+        "🔑 Сейчас используется: <b>ваш личный ключ</b>."
+        if cur else "🔑 Сейчас используется: <b>общий ключ бота</b>."
+    )
+    await target.answer(
+        KEY_GUIDE + "\n\n" + state_line,
+        reply_markup=_key_menu_keyboard(bool(cur)),
+        disable_web_page_preview=True,
+    )
+
+
+async def _apply_key(message: Message, user_id: int, key: str) -> None:
+    """Проверить ключ и установить его, либо оставить общий, если невалиден."""
+    note = await message.answer("🔍 Проверяю ключ…")
+    valid = await client.validate_key(key)
+    if valid:
+        await db.set_user_key(user_id, key)
+        await note.edit_text("✅ Ключ работает и сохранён — запросы пойдут через него.")
+    else:
+        await db.set_user_key(user_id, None)
+        await note.edit_text(
+            "❌ Ключ недействителен (OpenRouter его отклонил). "
+            "Оставляю общий ключ бота. Проверьте ключ и попробуйте снова."
+        )
+
+
 @router.callback_query(F.data == "hint_key")
 async def cb_hint_key(call: CallbackQuery) -> None:
     await call.answer()
-    await call.message.answer(KEY_GUIDE, disable_web_page_preview=True)
+    await _show_key_menu(call.message, call.from_user.id)
+
+
+@router.callback_query(F.data == "key_enter")
+async def cb_key_enter(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(KeyForm.waiting)
+    await call.answer()
+    await call.message.answer(
+        "⌨️ Пришлите ваш ключ OpenRouter одним сообщением "
+        "(начинается с <code>sk-or-</code>).\n"
+        "Я проверю его и удалю сообщение с ключом.\n\n"
+        "Отмена — /cancel",
+    )
+
+
+@router.callback_query(F.data == "key_revoke")
+async def cb_key_revoke(call: CallbackQuery) -> None:
+    await db.set_user_key(call.from_user.id, None)
+    await call.answer("Ключ отозван")
+    await call.message.answer("🚫 Личный ключ отозван — используется общий ключ бота.")
+
+
+@router.message(StateFilter(KeyForm.waiting), Command("cancel"))
+async def cmd_key_cancel(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("Отменено. Ключ не изменён.")
+
+
+@router.message(StateFilter(KeyForm.waiting), F.text & ~F.text.startswith("/"))
+async def on_key_input(message: Message, state: FSMContext) -> None:
+    key = message.text.strip()
+    await state.clear()
+    # Удаляем сообщение с ключом, чтобы оно не осталось в чате.
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    await db.ensure_user(message.from_user.id)
+    await _apply_key(message, message.from_user.id, key)
 
 
 # ---- текстовые команды настройки ----------------------------------------
@@ -343,13 +441,17 @@ async def cmd_temp(message: Message) -> None:
 async def cmd_setkey(message: Message) -> None:
     key = message.text.partition(" ")[2].strip()
     await db.ensure_user(message.from_user.id)
-    if not key or key == "-":
+    if key == "-":
         await db.set_user_key(message.from_user.id, None)
-        await message.answer("Личный ключ сброшен — используется общий ключ бота.")
+        await message.answer("🚫 Личный ключ отозван — используется общий ключ бота.")
         return
-    await db.set_user_key(message.from_user.id, key)
+    if not key:
+        # Без аргумента — показываем инструкцию и кнопки.
+        await _show_key_menu(message, message.from_user.id)
+        return
+    # Ключ передан прямо в команде — удаляем сообщение и проверяем.
     try:
         await message.delete()
     except Exception:
         pass
-    await message.answer("✅ Ваш OpenRouter-ключ сохранён. Сообщение с ключом удалено.")
+    await _apply_key(message, message.from_user.id, key)
