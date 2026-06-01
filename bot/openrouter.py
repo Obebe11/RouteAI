@@ -51,6 +51,10 @@ class OpenRouterClient:
                     "output_modalities"
                 )
                 or ["text"],
+                "input_modalities": (m.get("architecture") or {}).get(
+                    "input_modalities"
+                )
+                or ["text"],
             }
             for m in free
         ]

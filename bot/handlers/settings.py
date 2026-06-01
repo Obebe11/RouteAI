@@ -11,7 +11,15 @@ from aiogram.types import (
 
 from ..db import db
 from ..keyboards import BTN_MODELS, BTN_SETTINGS
-from ..models_cache import filter_models, is_audio_model, uptime_emoji
+from ..models_cache import (
+    CATEGORIES,
+    CATEGORY_LABEL,
+    category_counts,
+    filter_by_category,
+    has_vision,
+    is_chat_category,
+    uptime_emoji,
+)
 from ..openrouter import OpenRouterError
 from ..runtime import models_cache, user_api_key
 from ..session import get_session
@@ -43,103 +51,129 @@ def _model_label(m: dict) -> str:
     emoji = uptime_emoji(m.get("uptime"))
     up = m.get("uptime")
     suffix = f" {round(up)}%" if up is not None else ""
-    return f"{emoji} {m['name']}{suffix}"
+    eye = " 👁" if has_vision(m) else ""
+    return f"{emoji} {m['name']}{eye}{suffix}"
 
 
-def _models_keyboard(models: list[dict], audio: bool, page: int) -> InlineKeyboardMarkup:
-    a = 1 if audio else 0
+async def _all_models(target: Message) -> list[dict] | None:
+    """Текущий кэш моделей; разовая дозагрузка, если кэш пуст."""
+    models = models_cache.snapshot()
+    if models:
+        return models
+    try:
+        return await models_cache.get()
+    except OpenRouterError as exc:
+        await target.answer(f"Не удалось получить список моделей: {exc}")
+        return None
+
+
+# ---- экран выбора категории ---------------------------------------------
+
+
+def _categories_keyboard(counts: dict[str, int]) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=f"{label} ({counts[key]})", callback_data=f"cat:{key}:0")]
+        for key, label in CATEGORIES
+        if counts.get(key, 0) > 0
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _show_categories(target: Message, edit: bool) -> None:
+    models = await _all_models(target)
+    if models is None:
+        return
+    counts = category_counts(models)
+    if not any(counts.values()):
+        text = "Бесплатных моделей сейчас не найдено, попробуйте позже."
+        await (target.edit_text(text) if edit else target.answer(text))
+        return
+    caption = (
+        f"🗂 <b>Категории моделей</b> (всего {len(models)})\n"
+        "Выберите категорию, затем модель. Сортировка по аптайму:\n"
+        "🟢 ≥95%  🟡 80–95%  🔴 &lt;80%  ⚪ нет данных"
+    )
+    kb = _categories_keyboard(counts)
+    await (target.edit_text(caption, reply_markup=kb) if edit
+           else target.answer(caption, reply_markup=kb))
+
+
+# ---- экран моделей внутри категории -------------------------------------
+
+
+def _category_keyboard(models: list[dict], key: str, page: int) -> InlineKeyboardMarkup:
     start = page * _PAGE_SIZE
     chunk = models[start:start + _PAGE_SIZE]
     rows = [
-        [InlineKeyboardButton(
-            text=_model_label(m), callback_data=f"pickmodel:{a}:{i + start}"
-        )]
+        [InlineKeyboardButton(text=_model_label(m), callback_data=f"pick:{key}:{i + start}")]
         for i, m in enumerate(chunk)
     ]
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="« Назад", callback_data=f"models:{a}:{page - 1}"))
+        nav.append(InlineKeyboardButton(text="« Назад", callback_data=f"cat:{key}:{page - 1}"))
     if start + _PAGE_SIZE < len(models):
-        nav.append(InlineKeyboardButton(text="Вперёд »", callback_data=f"models:{a}:{page + 1}"))
+        nav.append(InlineKeyboardButton(text="Вперёд »", callback_data=f"cat:{key}:{page + 1}"))
     if nav:
         rows.append(nav)
-    # Переключатель вкладки.
-    if audio:
-        rows.append([InlineKeyboardButton(text="💬 Текстовые модели", callback_data="models:0:0")])
-    else:
-        rows.append([InlineKeyboardButton(text="🎵 Аудио-модели", callback_data="models:1:0")])
+    rows.append([InlineKeyboardButton(text="« Категории", callback_data="cats")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _tab_caption(audio: bool, count: int) -> str:
-    if audio:
-        return (
-            f"🎵 <b>Аудио-модели</b> ({count})\n"
-            "Генерируют звук, а не текст — в обычном чате недоступны, "
-            "вкладка для ознакомления.\n"
-            "🟢 ≥95%  🟡 80–95%  🔴 &lt;80%  ⚪ нет данных"
-        )
-    return (
-        f"💬 <b>Текстовые модели</b> ({count}) — по аптайму ↓\n"
-        "🟢 ≥95%  🟡 80–95%  🔴 &lt;80%  ⚪ нет данных\n\n"
+async def _show_category(target: Message, key: str, page: int, edit: bool) -> None:
+    models = await _all_models(target)
+    if models is None:
+        return
+    cat = filter_by_category(models, key)
+    if not cat:
+        await (target.edit_text("В этой категории сейчас нет моделей.")
+               if edit else target.answer("В этой категории сейчас нет моделей."))
+        return
+    label = CATEGORY_LABEL.get(key, key)
+    hint = "" if is_chat_category(key) else \
+        "\n⚠️ Модели этой категории не предназначены для текстового чата."
+    vision = "\n👁 — модель распознаёт изображения (можно отправлять фото)." \
+        if any(has_vision(m) for m in cat) else ""
+    caption = (
+        f"{label} ({len(cat)}) — по аптайму ↓{hint}{vision}\n\n"
         "Выберите модель для текущего разговора:"
     )
-
-
-async def _show_models(target: Message, audio: bool, page: int, edit: bool) -> None:
-    all_models = models_cache.snapshot()
-    if not all_models:
-        # Кэш ещё пуст (например, прелоад при старте не удался) — грузим разово.
-        try:
-            all_models = await models_cache.get()
-        except OpenRouterError as exc:
-            await target.answer(f"Не удалось получить список моделей: {exc}")
-            return
-    models = filter_models(all_models, audio)
-    if not models:
-        text = "🎵 Сейчас бесплатных аудио-моделей нет." if audio \
-            else "Бесплатных текстовых моделей сейчас не найдено."
-        if edit:
-            await target.edit_text(text)
-        else:
-            await target.answer(text)
-        return
-    caption = _tab_caption(audio, len(models))
-    kb = _models_keyboard(models, audio, page)
-    if edit:
-        await target.edit_text(caption, reply_markup=kb)
-    else:
-        await target.answer(caption, reply_markup=kb)
+    kb = _category_keyboard(cat, key, page)
+    await (target.edit_text(caption, reply_markup=kb) if edit
+           else target.answer(caption, reply_markup=kb))
 
 
 @router.message(Command("models", "model"))
 @router.message(F.text == BTN_MODELS)
 async def cmd_models(message: Message) -> None:
-    await _show_models(message, audio=False, page=0, edit=False)
+    await _show_categories(message, edit=False)
 
 
-@router.callback_query(F.data.startswith("models:"))
-async def cb_models_page(call: CallbackQuery) -> None:
-    _, a, page = call.data.split(":")
-    await _show_models(call.message, audio=(a == "1"), page=int(page), edit=True)
+@router.callback_query(F.data == "cats")
+async def cb_categories(call: CallbackQuery) -> None:
+    await _show_categories(call.message, edit=True)
     await call.answer()
 
 
-@router.callback_query(F.data.startswith("pickmodel:"))
+@router.callback_query(F.data.startswith("cat:"))
+async def cb_category(call: CallbackQuery) -> None:
+    _, key, page = call.data.split(":")
+    await _show_category(call.message, key, int(page), edit=True)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("pick:"))
 async def cb_pick_model(call: CallbackQuery) -> None:
-    _, a, idx = call.data.split(":")
-    audio = a == "1"
-    models = filter_models(models_cache.snapshot(), audio)
+    _, key, idx = call.data.split(":")
+    cat = filter_by_category(models_cache.snapshot(), key)
     idx = int(idx)
-    if idx >= len(models):
+    if idx >= len(cat):
         await call.answer("Список обновился, откройте «Модели» заново.", show_alert=True)
         return
-    model = models[idx]
+    model = cat[idx]
     session = get_session(call.from_user.id)
     session.model = model["id"]
-    note = ""
-    if is_audio_model(model):
-        note = "\n⚠️ Это аудио-модель — обычный текстовый чат с ней работать не будет."
+    note = "" if is_chat_category(key) else \
+        "\n⚠️ Эта модель не для текстового чата — обычные сообщения работать не будут."
     await call.message.edit_text(
         f"{uptime_emoji(model.get('uptime'))} Модель → <code>{model['id']}</code>{note}"
     )
@@ -199,7 +233,7 @@ async def cmd_settings(message: Message) -> None:
 
 @router.callback_query(F.data == "open_models")
 async def cb_open_models(call: CallbackQuery) -> None:
-    await _show_models(call.message, audio=False, page=0, edit=False)
+    await _show_categories(call.message, edit=False)
     await call.answer()
 
 

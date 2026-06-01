@@ -14,7 +14,7 @@ from .. import config
 from ..openrouter import OpenRouterError
 from ..runtime import client, user_api_key
 from ..session import Session
-from ..utils import split_message, trim_history
+from ..utils import clean_response, split_message, trim_history
 from .common import active_session
 
 router = Router()
@@ -79,6 +79,7 @@ async def on_text(message: Message) -> None:
         await placeholder.edit_text(f"⚠️ Непредвиденная ошибка: {exc}")
         return
 
+    acc = clean_response(acc)
     if not acc.strip():
         session.messages.pop()
         await placeholder.edit_text(

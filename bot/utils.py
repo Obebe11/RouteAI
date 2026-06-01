@@ -59,6 +59,22 @@ def escape_markdown_v2(text: str) -> str:
     return "".join("\\" + ch if ch in _MD2_SPECIAL else ch for ch in text)
 
 
+# Служебные токены шаблонов чата, которые некоторые модели подмешивают в ответ.
+_CONTROL_TOKENS = (
+    "<|im_end|>", "<|im_start|>", "<|eot_id|>", "<|end_of_text|>",
+    "<|endoftext|>", "<|end|>", "<|user|>", "<|assistant|>", "<|system|>",
+    "</assistant>", "<assistant>", "</s>", "<s>",
+    "<end_of_turn>", "<start_of_turn>", "[/INST]", "[INST]",
+)
+
+
+def clean_response(text: str) -> str:
+    """Убирает служебные токены шаблона из ответа модели."""
+    for tok in _CONTROL_TOKENS:
+        text = text.replace(tok, "")
+    return text.strip()
+
+
 def trim_history(messages: list[dict], max_messages: int = 20) -> list[dict]:
     """Сохраняет system-сообщения + последние max_messages обычных сообщений."""
     system = [m for m in messages if m.get("role") == "system"]

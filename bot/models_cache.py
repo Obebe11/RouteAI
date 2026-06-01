@@ -60,17 +60,50 @@ class ModelsCache:
         return any(m["id"] == model_id for m in self._models)
 
 
-def is_audio_model(m: dict) -> bool:
-    """Модель генерирует аудио (а не текст) — для отдельной вкладки."""
-    out = m.get("output_modalities") or ["text"]
-    return "audio" in out and "text" not in out
+# Категории моделей: (ключ, подпись для кнопки/заголовка). Порядок = порядок показа.
+CATEGORIES: list[tuple[str, str]] = [
+    ("text", "💬 Текстовые"),
+    ("multimodal", "👁 Мультимодальные"),
+    ("audio", "🎵 Музыка / Аудио"),
+    ("image", "🖼 Генерация картинок"),
+    ("other", "📦 Прочие"),
+]
+CATEGORY_LABEL = dict(CATEGORIES)
 
 
-def filter_models(models: list[dict], audio: bool) -> list[dict]:
-    """audio=True → только аудио-модели; иначе — текстовые (чат)."""
-    if audio:
-        return [m for m in models if is_audio_model(m)]
-    return [m for m in models if not is_audio_model(m)]
+def model_category(m: dict) -> str:
+    """Категория модели по её модальностям ввода/вывода."""
+    out = set(m.get("output_modalities") or ["text"])
+    inp = set(m.get("input_modalities") or ["text"])
+    if "audio" in out:
+        return "audio"
+    if "image" in out:
+        return "image"
+    if "text" in out:
+        # Текст на выходе: чисто текстовый вход → «текстовые», иначе мультимодальные.
+        return "multimodal" if inp - {"text"} else "text"
+    return "other"
+
+
+def has_vision(m: dict) -> bool:
+    """Модель умеет принимать изображения на вход (распознавание фото)."""
+    return "image" in (m.get("input_modalities") or ["text"])
+
+
+def is_chat_category(key: str) -> bool:
+    """Категории, с которыми реально работает текстовый чат."""
+    return key in ("text", "multimodal")
+
+
+def filter_by_category(models: list[dict], key: str) -> list[dict]:
+    return [m for m in models if model_category(m) == key]
+
+
+def category_counts(models: list[dict]) -> dict[str, int]:
+    counts = {k: 0 for k, _ in CATEGORIES}
+    for m in models:
+        counts[model_category(m)] = counts.get(model_category(m), 0) + 1
+    return counts
 
 
 def uptime_emoji(uptime: float | None) -> str:
