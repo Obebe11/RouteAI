@@ -46,7 +46,7 @@ _HELP = (
     "📣 Новости и анонсы — в моём "
     "<a href=\"https://t.me/obebi4\">Telegram-канале</a>.\n"
     "💻 Исходный код проекта открыт на "
-    "<a href=\"https://github.com/Obebe11/orbot\">GitHub</a>."
+    "<a href=\"https://github.com/Obebe11/RouteAI\">GitHub</a>."
 )
 
 

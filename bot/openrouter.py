@@ -98,7 +98,7 @@ class OpenRouterClient:
         key = self._resolve_key(api_key)
         headers = {
             **self._auth_headers(key),
-            "HTTP-Referer": "https://github.com/Obebe11/orbot",
+            "HTTP-Referer": "https://github.com/Obebe11/RouteAI",
             "X-Title": "RouterAi",
             "Content-Type": "application/json",
         }
