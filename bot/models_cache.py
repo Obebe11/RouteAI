@@ -69,7 +69,6 @@ RANDOM_MODEL_LABEL = "🎲 Случайная модель"
 # Категории моделей: (ключ, подпись для кнопки/заголовка). Порядок = порядок показа.
 CATEGORIES: list[tuple[str, str]] = [
     ("text", "💬 Текстовые"),
-    ("multimodal", "👁 Мультимодальные"),
     ("audio", "🎵 Музыка / Аудио"),
     ("image", "🖼 Генерация картинок"),
     ("other", "📦 Прочие"),
@@ -78,16 +77,18 @@ CATEGORY_LABEL = dict(CATEGORIES)
 
 
 def model_category(m: dict) -> str:
-    """Категория модели по её модальностям ввода/вывода."""
+    """Категория модели по её модальностям вывода.
+
+    Любая модель с текстовым выводом (включая vision/мультимодальные) попадает
+    в «Текстовые»; vision дополнительно помечается эмодзи 👁 в списке.
+    """
     out = set(m.get("output_modalities") or ["text"])
-    inp = set(m.get("input_modalities") or ["text"])
     if "audio" in out:
         return "audio"
     if "image" in out:
         return "image"
     if "text" in out:
-        # Текст на выходе: чисто текстовый вход → «текстовые», иначе мультимодальные.
-        return "multimodal" if inp - {"text"} else "text"
+        return "text"
     return "other"
 
 
@@ -98,7 +99,7 @@ def has_vision(m: dict) -> bool:
 
 def is_chat_category(key: str) -> bool:
     """Категории, с которыми реально работает текстовый чат."""
-    return key in ("text", "multimodal")
+    return key == "text"
 
 
 def filter_by_category(models: list[dict], key: str) -> list[dict]:
