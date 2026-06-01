@@ -4,6 +4,7 @@ from datetime import datetime
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -14,6 +15,7 @@ from aiogram.types import (
 from .. import crypto
 from ..db import db
 from ..keyboards import BTN_HELP, BTN_NEW, BTN_SAVE, BTN_SAVED, main_menu
+from .settings import Form
 from ..session import (
     clear_passphrase,
     get_passphrase,
@@ -75,26 +77,32 @@ async def cmd_new(message: Message) -> None:
 
 
 @router.message(Command("password"))
-async def cmd_password(message: Message) -> None:
+async def cmd_password(message: Message, state: FSMContext) -> None:
     arg = message.text.partition(" ")[2].strip()
-    # Удаляем сообщение с паролем, чтобы оно не осталось в чате.
+    if not arg:
+        # Без аргумента — кнопочный ввод (как с ключом).
+        await state.set_state(Form.password)
+        await message.answer(
+            "🔒 <b>Пароль для шифрования сохранённых чатов</b> (zero-knowledge).\n"
+            "Отправьте пароль одним сообщением — его не знает даже сервер.\n"
+            "«<code>-</code>» — сбросить пароль. /cancel — отмена."
+        )
+        return
+    # Пароль передан прямо в команде — удаляем сообщение.
     try:
         await message.delete()
     except Exception:
         pass
-    if not arg or arg == "-":
+    if arg == "-":
         clear_passphrase(message.from_user.id)
         await message.answer(
-            "🔓 Пароль сброшен (из памяти). Новые /save будут шифроваться "
-            "общим ключом сервера."
+            "🔓 Пароль сброшен (из памяти). Новые /save шифруются общим ключом сервера."
         )
         return
     set_passphrase(message.from_user.id, arg)
     await message.answer(
-        "🔐 Пароль принят (хранится только в памяти этой сессии).\n"
-        "Теперь /save шифрует чат этим паролем — без него его не прочитает "
-        "никто, включая владельца сервера. Чтобы открыть такой чат после "
-        "перезапуска бота, введите этот же пароль командой /password."
+        "🔐 Пароль принят (только в памяти). Теперь /save шифрует чат им — "
+        "без него его не прочитает никто, включая владельца сервера."
     )
 
 

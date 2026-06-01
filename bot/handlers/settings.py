@@ -26,12 +26,19 @@ from ..models_cache import (
 )
 from ..openrouter import OpenRouterError
 from ..runtime import client, models_cache, user_api_key
-from ..session import get_session
+from ..session import clear_passphrase, get_session, set_passphrase
 from .common import active_session
 
 
 class KeyForm(StatesGroup):
     waiting = State()
+
+
+class Form(StatesGroup):
+    """Состояния ожидания ввода значения после нажатия кнопки."""
+    system = State()
+    temp = State()
+    password = State()
 
 router = Router()
 
@@ -251,7 +258,7 @@ async def _settings_text(user_id: int) -> str:
         "— случайность/творческость ответов\n"
         f"🔑 Ключ: {key_state}\n"
         f"✏️ Системный промт: {sys_prompt}\n"
-        "<i>(промт — как модель себя ведёт; кнопки ниже всё поясняют)</i>"
+        "<i>(промт — как модель себя ведёт; жмите кнопки ниже)</i>"
     )
 
 
@@ -268,10 +275,12 @@ def _settings_keyboard(active_temp: float) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="🤖 Сменить модель", callback_data="open_models")],
             temp_row,
+            [InlineKeyboardButton(text="✏️ Своя температура", callback_data="ask_temp")],
             [
-                InlineKeyboardButton(text="✏️ Системный промт", callback_data="hint_system"),
-                InlineKeyboardButton(text="🔑 Свой ключ", callback_data="hint_key"),
+                InlineKeyboardButton(text="📝 Системный промт", callback_data="ask_system"),
+                InlineKeyboardButton(text="🔒 Пароль", callback_data="ask_password"),
             ],
+            [InlineKeyboardButton(text="🔑 Свой ключ", callback_data="hint_key")],
         ]
     )
 
@@ -304,13 +313,94 @@ async def cb_settemp(call: CallbackQuery) -> None:
     await call.answer(f"Температура → {value}")
 
 
-@router.callback_query(F.data == "hint_system")
-async def cb_hint_system(call: CallbackQuery) -> None:
+# ---- кнопочный ввод: системный промт / температура / пароль -------------
+
+
+@router.callback_query(F.data == "ask_system")
+async def cb_ask_system(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Form.system)
     await call.answer()
     await call.message.answer(
         SYSTEM_EXPLAIN + "\n\n"
-        "Задать: <code>/system ваш текст</code>\n"
-        "Очистить: <code>/system -</code>"
+        "✏️ Отправьте текст системного промта одним сообщением.\n"
+        "«<code>-</code>» — очистить. /cancel — отмена."
+    )
+
+
+@router.callback_query(F.data == "ask_temp")
+async def cb_ask_temp(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Form.temp)
+    await call.answer()
+    await call.message.answer(
+        TEMP_EXPLAIN + "\n\n"
+        "🌡 Отправьте число от <b>0.0</b> до <b>2.0</b> (например 0.8).\n"
+        "/cancel — отмена."
+    )
+
+
+@router.callback_query(F.data == "ask_password")
+async def cb_ask_password(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Form.password)
+    await call.answer()
+    await call.message.answer(
+        "🔒 <b>Пароль для шифрования сохранённых чатов</b> (zero-knowledge).\n"
+        "Отправьте пароль одним сообщением — его не знает даже сервер.\n"
+        "«<code>-</code>» — сбросить пароль. /cancel — отмена."
+    )
+
+
+@router.message(StateFilter(Form.system, Form.temp, Form.password), Command("cancel"))
+async def cancel_input(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("Отменено. Ничего не изменено.")
+
+
+@router.message(StateFilter(Form.system), F.text & ~F.text.startswith("/"))
+async def on_system_input(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    session = await active_session(message.from_user.id)
+    text = message.text.strip()
+    session.system_prompt = "" if text == "-" else text
+    await message.answer(
+        "✅ Системный промт обновлён." if session.system_prompt
+        else "✅ Системный промт очищен."
+    )
+
+
+@router.message(StateFilter(Form.temp), F.text & ~F.text.startswith("/"))
+async def on_temp_input(message: Message, state: FSMContext) -> None:
+    session = await active_session(message.from_user.id)
+    arg = message.text.strip().replace(",", ".")
+    try:
+        value = float(arg)
+        if not 0.0 <= value <= 2.0:
+            raise ValueError
+    except ValueError:
+        await message.answer("Нужно число от 0.0 до 2.0. Попробуйте ещё раз или /cancel.")
+        return
+    await state.clear()
+    session.temperature = value
+    await message.answer(f"✅ Температура → {value} ({_temp_word(value)})")
+
+
+@router.message(StateFilter(Form.password), F.text & ~F.text.startswith("/"))
+async def on_password_input(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    pwd = message.text.strip()
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    if pwd == "-":
+        clear_passphrase(message.from_user.id)
+        await message.answer(
+            "🔓 Пароль сброшен. Новые /save шифруются общим ключом сервера."
+        )
+        return
+    set_passphrase(message.from_user.id, pwd)
+    await message.answer(
+        "🔐 Пароль принят (только в памяти). Теперь /save шифрует чат им — "
+        "без пароля его не прочитает никто, включая сервер."
     )
 
 
@@ -397,33 +487,35 @@ async def on_key_input(message: Message, state: FSMContext) -> None:
 
 
 @router.message(Command("system"))
-async def cmd_system(message: Message) -> None:
+async def cmd_system(message: Message, state: FSMContext) -> None:
     session = await active_session(message.from_user.id)
     text = message.text.partition(" ")[2].strip()
     if not text:
+        # Без аргумента — запускаем кнопочный ввод.
+        await state.set_state(Form.system)
         cur = session.system_prompt or "(пусто)"
         await message.answer(
             SYSTEM_EXPLAIN + "\n\n"
             f"Сейчас: <code>{cur}</code>\n\n"
-            "Чтобы задать: <code>/system ваш текст</code>\n"
-            "Очистить: <code>/system -</code>"
+            "✏️ Отправьте новый текст промта. «<code>-</code>» — очистить. /cancel — отмена."
         )
         return
     session.system_prompt = "" if text == "-" else text
     await message.answer(
-        "Системный промт обновлён." if session.system_prompt else "Системный промт очищен."
+        "✅ Системный промт обновлён." if session.system_prompt else "✅ Системный промт очищен."
     )
 
 
 @router.message(Command("temp"))
-async def cmd_temp(message: Message) -> None:
+async def cmd_temp(message: Message, state: FSMContext) -> None:
     session = await active_session(message.from_user.id)
     arg = message.text.partition(" ")[2].strip().replace(",", ".")
     if not arg:
+        await state.set_state(Form.temp)
         await message.answer(
             TEMP_EXPLAIN + "\n\n"
             f"Сейчас: {session.temperature} ({_temp_word(session.temperature)})\n"
-            "Задать: <code>/temp 0.7</code> (диапазон 0.0–2.0)"
+            "🌡 Отправьте число от 0.0 до 2.0. /cancel — отмена."
         )
         return
     try:
@@ -434,7 +526,7 @@ async def cmd_temp(message: Message) -> None:
         await message.answer("Нужно число от 0.0 до 2.0.")
         return
     session.temperature = value
-    await message.answer(f"Температура → {value}")
+    await message.answer(f"✅ Температура → {value}")
 
 
 @router.message(Command("setkey"))
