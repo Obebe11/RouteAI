@@ -5,6 +5,8 @@
 
 import asyncio
 import base64
+import html
+import logging
 import time
 from io import BytesIO
 
@@ -12,6 +14,7 @@ import telegramify_markdown
 from aiogram import F, Router
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command
 from aiogram.types import Message
 
 from .. import config
@@ -22,6 +25,7 @@ from ..utils import clean_response, split_message, trim_history
 from .common import active_session
 
 router = Router()
+log = logging.getLogger("routeai.dialog")
 
 # Не чаще одного редактирования сообщения раз в EDIT_INTERVAL секунд (rate limit TG).
 EDIT_INTERVAL = 1.3
@@ -76,6 +80,17 @@ async def _respond(message: Message, session: Session, user_content) -> None:
     user_id = message.from_user.id
     session.add("user", user_content)
     payload = _build_messages(session)
+
+    if config.DEBUG:
+        sys_msgs = [m for m in payload if m["role"] == "system"]
+        log.info(
+            "[DEBUG] user=%s model=%s active_prompts=%d system_len=%d roles=%s",
+            user_id, session.model, sum(p.active for p in session.prompts),
+            len(sys_msgs[0]["content"]) if sys_msgs else 0,
+            [m["role"] for m in payload],
+        )
+        if sys_msgs:
+            log.info("[DEBUG] system content: %r", sys_msgs[0]["content"][:1000])
 
     key = await user_api_key(user_id)
     placeholder = await message.answer("…")
@@ -151,6 +166,32 @@ async def _respond(message: Message, session: Session, user_content) -> None:
     for extra in parts[1:]:
         await asyncio.sleep(0.4)
         await message.answer(extra, parse_mode=None)
+
+
+@router.message(Command("debug"))
+async def cmd_debug(message: Message) -> None:
+    """Показать, что РЕАЛЬНО уходит в модель для текущей сессии."""
+    session = await active_session(message.from_user.id)
+
+    lines = ["<b>🔍 Отладка сессии</b>", ""]
+    lines.append(f"🤖 Модель: <code>{html.escape(session.model)}</code>")
+    lines.append(f"📝 Промтов: {len(session.prompts)} (активных "
+                 f"{sum(p.active for p in session.prompts)}):")
+    for i, p in enumerate(session.prompts, 1):
+        mark = "✅" if p.active else "⬜"
+        name = html.escape(p.name or (p.text[:40] + ("…" if len(p.text) > 40 else "")))
+        lines.append(f"  {mark} {i}. {name}")
+
+    eff = session.effective_system()
+    custom = session.custom_text()
+    lines.append("")
+    lines.append("<b>Системное сообщение, уходящее в модель:</b>")
+    lines.append(f"<code>{html.escape(eff[:1500]) or '(пусто)'}</code>")
+    lines.append("")
+    lines.append("<b>Подкрепление в последнем запросе (custom):</b>")
+    lines.append(f"<code>{html.escape(custom[:500]) or '(нет)'}</code>")
+
+    await message.answer("\n".join(lines))
 
 
 @router.message(F.text & ~F.text.startswith("/"))

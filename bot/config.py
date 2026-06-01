@@ -31,3 +31,7 @@ HISTORY_MAX_MESSAGES: int = int(os.getenv("HISTORY_MAX_MESSAGES", "20"))
 # Модель по умолчанию для новых чатов. openrouter/free — мета-модель,
 # которая всегда доступна и маршрутизирует только на бесплатные модели.
 DEFAULT_MODEL: str = os.getenv("DEFAULT_MODEL", "openrouter/free")
+
+# Режим отладки: подробные логи payload (для тест-инстанса). НЕ включать в проде
+# (политика no-logs). Команда /debug доступна всегда.
+DEBUG: bool = os.getenv("DEBUG", "0") in ("1", "true", "True", "yes")
