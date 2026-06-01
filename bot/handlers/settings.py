@@ -15,7 +15,7 @@ from aiogram.types import (
 )
 
 from ..db import db
-from ..keyboards import BTN_MODELS, BTN_SETTINGS
+from ..keyboards import BTN_MODELS, BTN_SETTINGS, BUTTON_LABELS
 from ..models_cache import (
     CATEGORIES,
     CATEGORY_LABEL,
@@ -44,6 +44,9 @@ class Form(StatesGroup):
     password = State()
 
 router = Router()
+
+# Ожидающие подтверждения правки промтов: user_id -> {"idx": int, "text": str}.
+_pending_edit: dict[int, dict] = {}
 
 _PAGE_SIZE = 8
 _TEMP_PRESETS = (0.3, 0.7, 1.0, 1.3)
@@ -191,7 +194,8 @@ async def _show_category(target: Message, key: str, page: int, edit: bool) -> No
 
 @router.message(Command("models", "model"))
 @router.message(F.text == BTN_MODELS)
-async def cmd_models(message: Message) -> None:
+async def cmd_models(message: Message, state: FSMContext) -> None:
+    await state.clear()  # нажатие кнопки/команды отменяет любой ожидаемый ввод
     await _show_categories(message, edit=False)
 
 
@@ -203,8 +207,9 @@ async def cb_categories(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "pickrandom")
 async def cb_pick_random(call: CallbackQuery) -> None:
-    session = get_session(call.from_user.id)
+    session = await active_session(call.from_user.id)
     session.model = RANDOM_MODEL_ID
+    await db.save_pref_model(call.from_user.id, RANDOM_MODEL_ID)
     await call.message.edit_text(
         f"{RANDOM_MODEL_LABEL} выбрана — на каждый запрос будет случайная "
         "бесплатная чат-модель."
@@ -228,8 +233,9 @@ async def cb_pick_model(call: CallbackQuery) -> None:
         await call.answer("Список обновился, откройте «Модели» заново.", show_alert=True)
         return
     model = cat[idx]
-    session = get_session(call.from_user.id)
+    session = await active_session(call.from_user.id)
     session.model = model["id"]
+    await db.save_pref_model(call.from_user.id, model["id"])
     note = "" if is_chat_category(key) else \
         "\n⚠️ Эта модель не для текстового чата — обычные сообщения работать не будут."
     await call.message.edit_text(
@@ -361,13 +367,33 @@ async def cb_prompt_toggle(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("pd:"))
 async def cb_prompt_delete(call: CallbackQuery) -> None:
+    # Удаление — с подтверждением (вкл/выкл — без, см. cb_prompt_toggle).
+    i = int(call.data.split(":", 1)[1])
+    session = await active_session(call.from_user.id)
+    if not (0 <= i < len(session.prompts)) or session.prompts[i].preset:
+        await call.answer("Этот промт удалить нельзя.", show_alert=True)
+        return
+    p = session.prompts[i]
+    name = html.escape(p.name or (p.text[:40] + ("…" if len(p.text) > 40 else "")))
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Удалить", callback_data=f"dok:{i}"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="pmenu"),
+    ]])
+    await call.message.edit_text(f"🗑 Удалить промт «{name}»?", reply_markup=kb)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("dok:"))
+async def cb_prompt_delete_ok(call: CallbackQuery) -> None:
     i = int(call.data.split(":", 1)[1])
     session = await active_session(call.from_user.id)
     if 0 <= i < len(session.prompts) and not session.prompts[i].preset:
         session.prompts.pop(i)
         await persist_prompts(call.from_user.id, session)
+        await call.answer("Удалён")
+    else:
+        await call.answer()
     await _show_prompts_menu(call.message, call.from_user.id, edit=True)
-    await call.answer("Удалён")
 
 
 @router.callback_query(F.data == "pa")
@@ -400,7 +426,8 @@ async def cb_prompt_edit(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Command("settings"))
 @router.message(F.text == BTN_SETTINGS)
-async def cmd_settings(message: Message) -> None:
+async def cmd_settings(message: Message, state: FSMContext) -> None:
+    await state.clear()
     session = await active_session(message.from_user.id)
     await message.answer(
         await _settings_text(message.from_user.id),
@@ -417,8 +444,9 @@ async def cb_open_models(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("settemp:"))
 async def cb_settemp(call: CallbackQuery) -> None:
     value = float(call.data.split(":", 1)[1])
-    session = get_session(call.from_user.id)
+    session = await active_session(call.from_user.id)
     session.temperature = value
+    await db.save_pref_temperature(call.from_user.id, value)
     try:
         await call.message.edit_text(
             await _settings_text(call.from_user.id),
@@ -461,7 +489,7 @@ async def cancel_input(message: Message, state: FSMContext) -> None:
     await message.answer("Отменено. Ничего не изменено.")
 
 
-@router.message(StateFilter(Form.system), F.text & ~F.text.startswith("/"))
+@router.message(StateFilter(Form.system), F.text & ~F.text.startswith("/") & ~F.text.in_(BUTTON_LABELS))
 async def on_system_input(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     await state.clear()
@@ -470,23 +498,50 @@ async def on_system_input(message: Message, state: FSMContext) -> None:
     edit_idx = data.get("edit_idx")
 
     if edit_idx is not None and 0 <= edit_idx < len(session.prompts):
-        # Правка существующего промта.
-        session.prompts[edit_idx].text = text
-        if not session.prompts[edit_idx].preset:
-            session.prompts[edit_idx].name = ""
-        await message.answer("✅ Промт изменён.")
-    else:
-        # Добавление нового пользовательского промта.
-        session.prompts.append(Prompt(text=text, active=True))
+        # Правка — с подтверждением: показываем новый текст и просим подтвердить.
+        _pending_edit[message.from_user.id] = {"idx": edit_idx, "text": text}
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Сохранить", callback_data="eok"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="ecancel"),
+        ]])
         await message.answer(
-            f"✅ Промт добавлен и активен (всего {len(session.prompts)}). "
-            "Управление — в ⚙️ Настройки → «📝 Промты»."
+            f"✏️ Заменить промт №{edit_idx + 1} на:\n<code>{html.escape(text)}</code>\n\n"
+            "Сохранить изменение?",
+            reply_markup=kb,
         )
+        return
+    # Добавление нового пользовательского промта (без подтверждения).
+    session.prompts.append(Prompt(text=text, active=True))
     await persist_prompts(message.from_user.id, session)
+    await message.answer(
+        f"✅ Промт добавлен и активен (всего {len(session.prompts)})."
+    )
     await _show_prompts_menu(message, message.from_user.id, edit=False)
 
 
-@router.message(StateFilter(Form.temp), F.text & ~F.text.startswith("/"))
+@router.callback_query(F.data == "eok")
+async def cb_edit_ok(call: CallbackQuery) -> None:
+    p = _pending_edit.pop(call.from_user.id, None)
+    session = await active_session(call.from_user.id)
+    if p and 0 <= p["idx"] < len(session.prompts):
+        session.prompts[p["idx"]].text = p["text"]
+        if not session.prompts[p["idx"]].preset:
+            session.prompts[p["idx"]].name = ""
+        await persist_prompts(call.from_user.id, session)
+        await call.answer("Сохранено")
+    else:
+        await call.answer("Не удалось применить", show_alert=True)
+    await _show_prompts_menu(call.message, call.from_user.id, edit=True)
+
+
+@router.callback_query(F.data == "ecancel")
+async def cb_edit_cancel(call: CallbackQuery) -> None:
+    _pending_edit.pop(call.from_user.id, None)
+    await call.answer("Отменено")
+    await _show_prompts_menu(call.message, call.from_user.id, edit=True)
+
+
+@router.message(StateFilter(Form.temp), F.text & ~F.text.startswith("/") & ~F.text.in_(BUTTON_LABELS))
 async def on_temp_input(message: Message, state: FSMContext) -> None:
     session = await active_session(message.from_user.id)
     arg = message.text.strip().replace(",", ".")
@@ -499,10 +554,11 @@ async def on_temp_input(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     session.temperature = value
+    await db.save_pref_temperature(message.from_user.id, value)
     await message.answer(f"✅ Температура → {value} ({_temp_word(value)})")
 
 
-@router.message(StateFilter(Form.password), F.text & ~F.text.startswith("/"))
+@router.message(StateFilter(Form.password), F.text & ~F.text.startswith("/") & ~F.text.in_(BUTTON_LABELS))
 async def on_password_input(message: Message, state: FSMContext) -> None:
     await state.clear()
     pwd = message.text.strip()
@@ -589,7 +645,7 @@ async def cmd_key_cancel(message: Message, state: FSMContext) -> None:
     await message.answer("Отменено. Ключ не изменён.")
 
 
-@router.message(StateFilter(KeyForm.waiting), F.text & ~F.text.startswith("/"))
+@router.message(StateFilter(KeyForm.waiting), F.text & ~F.text.startswith("/") & ~F.text.in_(BUTTON_LABELS))
 async def on_key_input(message: Message, state: FSMContext) -> None:
     key = message.text.strip()
     await state.clear()

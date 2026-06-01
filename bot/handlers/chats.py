@@ -62,13 +62,16 @@ async def cmd_start(message: Message) -> None:
 
 @router.message(Command("help"))
 @router.message(F.text == BTN_HELP)
-async def cmd_help(message: Message) -> None:
+async def cmd_help(message: Message, state: FSMContext) -> None:
+    await state.clear()
     await message.answer(_HELP, reply_markup=main_menu(), disable_web_page_preview=True)
 
 
 @router.message(Command("new"))
 @router.message(F.text == BTN_NEW)
-async def cmd_new(message: Message) -> None:
+async def cmd_new(message: Message, state: FSMContext) -> None:
+    # Нажатие кнопки/команды отменяет любой ожидаемый ввод (промт/темп./пароль).
+    await state.clear()
     # /new сразу стирает текущий разговор без подтверждения.
     reset_session(message.from_user.id)
     await message.answer("🆕 Новый разговор. Прошлый стёрт (сохраняйте важное через /save).")
@@ -109,7 +112,8 @@ async def cmd_password(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("save"))
 @router.message(F.text == BTN_SAVE)
-async def cmd_save(message: Message) -> None:
+async def cmd_save(message: Message, state: FSMContext) -> None:
+    await state.clear()
     session = get_session(message.from_user.id)
     if session.is_empty():
         await message.answer("Пока нечего сохранять — разговор пуст.")
@@ -172,7 +176,8 @@ def _saved_keyboard(chats: list, active_id: int | None) -> InlineKeyboardMarkup:
 
 @router.message(Command("saved", "chats"))
 @router.message(F.text == BTN_SAVED)
-async def cmd_saved(message: Message) -> None:
+async def cmd_saved(message: Message, state: FSMContext) -> None:
+    await state.clear()
     await db.ensure_user(message.from_user.id)
     chats = await db.list_chats(message.from_user.id)
     if not chats:

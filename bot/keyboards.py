@@ -10,6 +10,11 @@ BTN_SAVE = "💾 Сохранить"
 BTN_SETTINGS = "⚙️ Настройки"
 BTN_HELP = "ℹ️ Помощь"
 
+# Все метки кнопок — чтобы FSM-ввод не принимал нажатие кнопки за значение.
+BUTTON_LABELS = frozenset({
+    BTN_MODELS, BTN_SAVED, BTN_NEW, BTN_SAVE, BTN_SETTINGS, BTN_HELP,
+})
+
 
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(

@@ -112,13 +112,18 @@ def get_session(user_id: int) -> Session:
 
 
 def reset_session(user_id: int) -> Session:
-    """Начать новый пустой разговор, СОХРАНИВ библиотеку промтов пользователя."""
+    """Начать новый пустой разговор, СОХРАНИВ настройки пользователя.
+
+    Промты, модель и температура — это настройки, а не часть разговора:
+    переносим их в новую сессию (чистятся только сообщения).
+    """
     old = _sessions.get(user_id)
     s = Session()
     if old is not None:
-        # Промты — это настройки пользователя, а не часть разговора: переносим.
         s.prompts = old.prompts
         s.prompts_loaded = old.prompts_loaded
+        s.model = old.model
+        s.temperature = old.temperature
     _sessions[user_id] = s
     return s
 

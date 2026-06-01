@@ -29,10 +29,12 @@ def _content_to_text(content) -> str:
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
-    user_id        INTEGER PRIMARY KEY,
-    openrouter_key TEXT,
-    active_chat_id INTEGER,
-    prompts_json   TEXT
+    user_id         INTEGER PRIMARY KEY,
+    openrouter_key  TEXT,
+    active_chat_id  INTEGER,
+    prompts_json    TEXT,
+    pref_model      TEXT,
+    pref_temperature REAL
 );
 
 CREATE TABLE IF NOT EXISTS chats (
@@ -94,8 +96,13 @@ class DB:
                 await self._conn.execute(ddl)
         cur = await self._conn.execute("PRAGMA table_info(users)")
         ucols = {r["name"] for r in await cur.fetchall()}
-        if "prompts_json" not in ucols:
-            await self._conn.execute("ALTER TABLE users ADD COLUMN prompts_json TEXT")
+        for name, ddl in (
+            ("prompts_json", "ALTER TABLE users ADD COLUMN prompts_json TEXT"),
+            ("pref_model", "ALTER TABLE users ADD COLUMN pref_model TEXT"),
+            ("pref_temperature", "ALTER TABLE users ADD COLUMN pref_temperature REAL"),
+        ):
+            if name not in ucols:
+                await self._conn.execute(ddl)
 
     async def close(self) -> None:
         if self._conn:
@@ -129,6 +136,18 @@ class DB:
         stored = encrypt(key) if key else None
         await self.conn.execute(
             "UPDATE users SET openrouter_key = ? WHERE user_id = ?", (stored, user_id)
+        )
+        await self.conn.commit()
+
+    async def save_pref_model(self, user_id: int, model: str) -> None:
+        await self.conn.execute(
+            "UPDATE users SET pref_model = ? WHERE user_id = ?", (model, user_id)
+        )
+        await self.conn.commit()
+
+    async def save_pref_temperature(self, user_id: int, temperature: float) -> None:
+        await self.conn.execute(
+            "UPDATE users SET pref_temperature = ? WHERE user_id = ?", (temperature, user_id)
         )
         await self.conn.commit()
 
