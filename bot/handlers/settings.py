@@ -1,5 +1,7 @@
 """Команды/кнопки настройки: модель, аудио-вкладка, промт, температура, ключ."""
 
+import html
+
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
@@ -239,27 +241,38 @@ async def cb_pick_model(call: CallbackQuery) -> None:
 # ---- инлайн-меню настроек -----------------------------------------------
 
 
+def _prompts_summary(session) -> str:
+    if not session.system_prompts:
+        return "(не заданы)"
+    lines = []
+    for i, p in enumerate(session.system_prompts, 1):
+        short = p if len(p) <= 80 else p[:80] + "…"
+        # Экранируем — текст промта может содержать < > & и сломать HTML-вёрстку.
+        short = html.escape(short)
+        lines.append(f"{i}. {short}")
+    return "\n" + "\n".join(lines)
+
+
 async def _settings_text(user_id: int) -> str:
     session = get_session(user_id)
     key = await user_api_key(user_id)
     key_state = "личный" if key else "общий бота"
-    sys_prompt = session.system_prompt or "(не задан)"
-    if len(sys_prompt) > 200:
-        sys_prompt = sys_prompt[:200] + "…"
     title = session.saved_title or "временный (не сохранён)"
     model_disp = (
         RANDOM_MODEL_LABEL if session.model == RANDOM_MODEL_ID
         else f"<code>{session.model}</code>"
     )
+    tg = "вкл ✅" if session.tg_format else "выкл ❌"
     return (
         f"<b>⚙️ Настройки разговора</b>\n"
         f"Состояние: {title}\n\n"
         f"🤖 Модель: {model_disp}\n"
-        f"🌡 Температура: {session.temperature} ({_temp_word(session.temperature)}) "
-        "— случайность/творческость ответов\n"
+        f"🌡 Температура: {session.temperature} ({_temp_word(session.temperature)})\n"
         f"🔑 Ключ: {key_state}\n"
-        f"✏️ Системный промт: {sys_prompt}\n"
-        "<i>(промт — как модель себя ведёт; жмите кнопки ниже)</i>"
+        f"📱 Формат Telegram + язык: {tg}\n"
+        f"📝 Системные промты ({len(session.system_prompts)}): "
+        f"{_prompts_summary(session)}\n"
+        "<i>(можно добавить несколько промтов — они объединяются)</i>"
     )
 
 
@@ -278,10 +291,14 @@ def _settings_keyboard(active_temp: float) -> InlineKeyboardMarkup:
             temp_row,
             [InlineKeyboardButton(text="✏️ Своя температура", callback_data="ask_temp")],
             [
-                InlineKeyboardButton(text="📝 Системный промт", callback_data="ask_system"),
-                InlineKeyboardButton(text="🔒 Пароль", callback_data="ask_password"),
+                InlineKeyboardButton(text="➕ Добавить промт", callback_data="ask_system"),
+                InlineKeyboardButton(text="🗑 Очистить промты", callback_data="clear_system"),
             ],
-            [InlineKeyboardButton(text="🔑 Свой ключ", callback_data="hint_key")],
+            [InlineKeyboardButton(text="📱 Формат Telegram вкл/выкл", callback_data="toggle_tg")],
+            [
+                InlineKeyboardButton(text="🔒 Пароль", callback_data="ask_password"),
+                InlineKeyboardButton(text="🔑 Свой ключ", callback_data="hint_key"),
+            ],
         ]
     )
 
@@ -327,9 +344,38 @@ async def cb_ask_system(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
     await call.message.answer(
         SYSTEM_EXPLAIN + "\n\n"
-        "✏️ Отправьте текст системного промта одним сообщением.\n"
-        "«<code>-</code>» — очистить. /cancel — отмена."
+        "➕ Отправьте текст промта одним сообщением — он <b>добавится</b> к "
+        "уже заданным (их можно несколько, они объединяются).\n"
+        "«<code>-</code>» — очистить все. /cancel — отмена."
     )
+
+
+@router.callback_query(F.data == "clear_system")
+async def cb_clear_system(call: CallbackQuery) -> None:
+    session = get_session(call.from_user.id)
+    session.system_prompts = []
+    try:
+        await call.message.edit_text(
+            await _settings_text(call.from_user.id),
+            reply_markup=_settings_keyboard(session.temperature),
+        )
+    except TelegramBadRequest:
+        pass
+    await call.answer("Промты очищены")
+
+
+@router.callback_query(F.data == "toggle_tg")
+async def cb_toggle_tg(call: CallbackQuery) -> None:
+    session = get_session(call.from_user.id)
+    session.tg_format = not session.tg_format
+    try:
+        await call.message.edit_text(
+            await _settings_text(call.from_user.id),
+            reply_markup=_settings_keyboard(session.temperature),
+        )
+    except TelegramBadRequest:
+        pass
+    await call.answer("Формат Telegram: " + ("вкл" if session.tg_format else "выкл"))
 
 
 @router.callback_query(F.data == "ask_temp")
@@ -365,10 +411,14 @@ async def on_system_input(message: Message, state: FSMContext) -> None:
     await state.clear()
     session = await active_session(message.from_user.id)
     text = message.text.strip()
-    session.system_prompt = "" if text == "-" else text
+    if text == "-":
+        session.system_prompts = []
+        await message.answer("✅ Все системные промты очищены.")
+        return
+    session.system_prompts.append(text)
     await message.answer(
-        "✅ Системный промт обновлён." if session.system_prompt
-        else "✅ Системный промт очищен."
+        f"✅ Промт добавлен (всего {len(session.system_prompts)}). "
+        "Можно добавить ещё через «➕ Добавить промт»."
     )
 
 
@@ -498,17 +548,19 @@ async def cmd_system(message: Message, state: FSMContext) -> None:
     if not text:
         # Без аргумента — запускаем кнопочный ввод.
         await state.set_state(Form.system)
-        cur = session.system_prompt or "(пусто)"
+        cur = html.escape(session.custom_text() or "(пусто)")
         await message.answer(
             SYSTEM_EXPLAIN + "\n\n"
-            f"Сейчас: <code>{cur}</code>\n\n"
-            "✏️ Отправьте новый текст промта. «<code>-</code>» — очистить. /cancel — отмена."
+            f"Сейчас ({len(session.system_prompts)} шт.): <code>{cur}</code>\n\n"
+            "➕ Отправьте текст — он добавится. «<code>-</code>» — очистить все. /cancel — отмена."
         )
         return
-    session.system_prompt = "" if text == "-" else text
-    await message.answer(
-        "✅ Системный промт обновлён." if session.system_prompt else "✅ Системный промт очищен."
-    )
+    if text == "-":
+        session.system_prompts = []
+        await message.answer("✅ Все системные промты очищены.")
+        return
+    session.system_prompts.append(text)
+    await message.answer(f"✅ Промт добавлен (всего {len(session.system_prompts)}).")
 
 
 @router.message(Command("temp"))

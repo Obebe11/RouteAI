@@ -9,6 +9,7 @@ import time
 from io import BytesIO
 
 from aiogram import F, Router
+from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 
@@ -26,12 +27,47 @@ EDIT_INTERVAL = 1.3
 TG_LIMIT = 4096
 
 
+def _reinforce_user(msg: dict, system_prompt: str) -> dict:
+    """Вернуть КОПИЮ сообщения пользователя с напоминанием системной инструкции.
+
+    Многие бесплатные модели слабо следуют роли system, поэтому дублируем
+    инструкцию прямо в текст последнего запроса (только в исходящем payload,
+    сохранённую историю не трогаем).
+    """
+    prefix = f"(Важно: следуй этой инструкции во всех ответах — {system_prompt})\n\n"
+    content = msg["content"]
+    if isinstance(content, str):
+        return {"role": "user", "content": prefix + content}
+    if isinstance(content, list):
+        new_items, injected = [], False
+        for item in content:
+            if not injected and isinstance(item, dict) and item.get("type") == "text":
+                new_items.append({"type": "text", "text": prefix + item.get("text", "")})
+                injected = True
+            else:
+                new_items.append(item)
+        if not injected:
+            new_items.insert(0, {"type": "text", "text": prefix.strip()})
+        return {"role": "user", "content": new_items}
+    return msg
+
+
 def _build_messages(session: Session) -> list[dict]:
     msgs: list[dict] = []
-    if session.system_prompt:
-        msgs.append({"role": "system", "content": session.system_prompt})
+    system = session.effective_system()
+    if system:
+        msgs.append({"role": "system", "content": system})
     msgs.extend(session.messages)
-    return trim_history(msgs, config.HISTORY_MAX_MESSAGES)
+    msgs = trim_history(msgs, config.HISTORY_MAX_MESSAGES)
+    # Подкрепляем ПОЛЬЗОВАТЕЛЬСКУЮ инструкцию (персону) в последнем запросе —
+    # слабые модели плохо держат её из роли system. TG-формат не дублируем.
+    custom = session.custom_text()
+    if custom:
+        for i in range(len(msgs) - 1, -1, -1):
+            if msgs[i].get("role") == "user":
+                msgs[i] = _reinforce_user(msgs[i], custom)
+                break
+    return msgs
 
 
 async def _respond(message: Message, session: Session, user_content) -> None:
@@ -89,14 +125,22 @@ async def _respond(message: Message, session: Session, user_content) -> None:
 
     session.add("assistant", acc)
 
+    # Финальный рендер: пробуем как Telegram HTML (модель форматирует тегами),
+    # при ошибке парсинга — обычный текст, чтобы сообщение точно ушло.
     parts = split_message(acc, TG_LIMIT)
     try:
-        await placeholder.edit_text(parts[0], parse_mode=None)
+        await placeholder.edit_text(parts[0], parse_mode=ParseMode.HTML)
     except TelegramBadRequest:
-        pass
+        try:
+            await placeholder.edit_text(parts[0], parse_mode=None)
+        except TelegramBadRequest:
+            pass
     for extra in parts[1:]:
         await asyncio.sleep(0.4)
-        await message.answer(extra, parse_mode=None)
+        try:
+            await message.answer(extra, parse_mode=ParseMode.HTML)
+        except TelegramBadRequest:
+            await message.answer(extra, parse_mode=None)
 
 
 @router.message(F.text & ~F.text.startswith("/"))

@@ -133,7 +133,7 @@ async def cmd_save(message: Message) -> None:
         message.from_user.id,
         title,
         session.model,
-        session.system_prompt,
+        session.custom_text(),
         session.temperature,
         session.messages,
         chat_id=session.saved_chat_id,
