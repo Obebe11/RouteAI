@@ -29,7 +29,7 @@ from ..models_cache import (
 )
 from ..openrouter import OpenRouterError
 from ..runtime import client, models_cache, user_api_key
-from ..session import clear_passphrase, get_session, set_passphrase
+from ..session import Prompt, clear_passphrase, get_session, set_passphrase
 from .common import active_session
 
 
@@ -241,18 +241,6 @@ async def cb_pick_model(call: CallbackQuery) -> None:
 # ---- инлайн-меню настроек -----------------------------------------------
 
 
-def _prompts_summary(session) -> str:
-    if not session.system_prompts:
-        return "(не заданы)"
-    lines = []
-    for i, p in enumerate(session.system_prompts, 1):
-        short = p if len(p) <= 80 else p[:80] + "…"
-        # Экранируем — текст промта может содержать < > & и сломать HTML-вёрстку.
-        short = html.escape(short)
-        lines.append(f"{i}. {short}")
-    return "\n" + "\n".join(lines)
-
-
 async def _settings_text(user_id: int) -> str:
     session = get_session(user_id)
     key = await user_api_key(user_id)
@@ -262,17 +250,14 @@ async def _settings_text(user_id: int) -> str:
         RANDOM_MODEL_LABEL if session.model == RANDOM_MODEL_ID
         else f"<code>{session.model}</code>"
     )
-    tg = "вкл ✅" if session.tg_format else "выкл ❌"
+    active = sum(1 for p in session.prompts if p.active)
     return (
         f"<b>⚙️ Настройки разговора</b>\n"
         f"Состояние: {title}\n\n"
         f"🤖 Модель: {model_disp}\n"
         f"🌡 Температура: {session.temperature} ({_temp_word(session.temperature)})\n"
         f"🔑 Ключ: {key_state}\n"
-        f"📱 Формат Telegram + язык: {tg}\n"
-        f"📝 Системные промты ({len(session.system_prompts)}): "
-        f"{_prompts_summary(session)}\n"
-        "<i>(можно добавить несколько промтов — они объединяются)</i>"
+        f"📝 Промты: активно {active} из {len(session.prompts)}"
     )
 
 
@@ -290,16 +275,124 @@ def _settings_keyboard(active_temp: float) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🤖 Сменить модель", callback_data="open_models")],
             temp_row,
             [InlineKeyboardButton(text="✏️ Своя температура", callback_data="ask_temp")],
-            [
-                InlineKeyboardButton(text="➕ Добавить промт", callback_data="ask_system"),
-                InlineKeyboardButton(text="🗑 Очистить промты", callback_data="clear_system"),
-            ],
-            [InlineKeyboardButton(text="📱 Формат Telegram вкл/выкл", callback_data="toggle_tg")],
+            [InlineKeyboardButton(text="📝 Промты (вкл/выкл/правка)", callback_data="pmenu")],
             [
                 InlineKeyboardButton(text="🔒 Пароль", callback_data="ask_password"),
                 InlineKeyboardButton(text="🔑 Свой ключ", callback_data="hint_key"),
             ],
         ]
+    )
+
+
+# ---- менеджер промтов: список с вкл/выкл, правкой и удалением -------------
+
+
+def _prompts_menu_text(session) -> str:
+    lines = ["<b>📝 Системные промты</b>", ""]
+    if not session.prompts:
+        lines.append("Список пуст. Добавьте промт кнопкой ниже.")
+    else:
+        for i, p in enumerate(session.prompts, 1):
+            mark = "✅" if p.active else "⬜"
+            name = html.escape(p.name or (p.text[:50] + ("…" if len(p.text) > 50 else "")))
+            tag = " (пресет)" if p.preset else ""
+            lines.append(f"{mark} <b>{i}.</b> {name}{tag}")
+    lines.append("")
+    lines.append("✅ — активен (учитывается). Нажмите на промт, чтобы вкл/выкл.")
+    return "\n".join(lines)
+
+
+def _prompts_menu_keyboard(session) -> InlineKeyboardMarkup:
+    rows = []
+    for i, p in enumerate(session.prompts):
+        toggle = InlineKeyboardButton(text=p.label(), callback_data=f"pt:{i}")
+        edit = InlineKeyboardButton(text="✏️", callback_data=f"pe:{i}")
+        row = [toggle, edit]
+        if not p.preset:
+            row.append(InlineKeyboardButton(text="🗑", callback_data=f"pd:{i}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="➕ Добавить промт", callback_data="pa")])
+    rows.append([InlineKeyboardButton(text="« Настройки", callback_data="back_settings")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _show_prompts_menu(message: Message, user_id: int, edit: bool) -> None:
+    session = get_session(user_id)
+    text = _prompts_menu_text(session)
+    kb = _prompts_menu_keyboard(session)
+    try:
+        if edit:
+            await message.edit_text(text, reply_markup=kb)
+        else:
+            await message.answer(text, reply_markup=kb)
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(F.data == "pmenu")
+async def cb_prompts_menu(call: CallbackQuery) -> None:
+    await _show_prompts_menu(call.message, call.from_user.id, edit=True)
+    await call.answer()
+
+
+@router.callback_query(F.data == "back_settings")
+async def cb_back_settings(call: CallbackQuery) -> None:
+    session = get_session(call.from_user.id)
+    try:
+        await call.message.edit_text(
+            await _settings_text(call.from_user.id),
+            reply_markup=_settings_keyboard(session.temperature),
+        )
+    except TelegramBadRequest:
+        pass
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("pt:"))
+async def cb_prompt_toggle(call: CallbackQuery) -> None:
+    i = int(call.data.split(":", 1)[1])
+    session = get_session(call.from_user.id)
+    if 0 <= i < len(session.prompts):
+        session.prompts[i].active = not session.prompts[i].active
+    await _show_prompts_menu(call.message, call.from_user.id, edit=True)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("pd:"))
+async def cb_prompt_delete(call: CallbackQuery) -> None:
+    i = int(call.data.split(":", 1)[1])
+    session = get_session(call.from_user.id)
+    if 0 <= i < len(session.prompts) and not session.prompts[i].preset:
+        session.prompts.pop(i)
+    await _show_prompts_menu(call.message, call.from_user.id, edit=True)
+    await call.answer("Удалён")
+
+
+@router.callback_query(F.data == "pa")
+async def cb_prompt_add(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(Form.system)
+    await state.update_data(edit_idx=None)
+    await call.answer()
+    await call.message.answer(
+        SYSTEM_EXPLAIN + "\n\n"
+        "➕ Отправьте текст нового промта одним сообщением. /cancel — отмена."
+    )
+
+
+@router.callback_query(F.data.startswith("pe:"))
+async def cb_prompt_edit(call: CallbackQuery, state: FSMContext) -> None:
+    i = int(call.data.split(":", 1)[1])
+    session = get_session(call.from_user.id)
+    if not (0 <= i < len(session.prompts)):
+        await call.answer("Промт не найден", show_alert=True)
+        return
+    await state.set_state(Form.system)
+    await state.update_data(edit_idx=i)
+    await call.answer()
+    cur = html.escape(session.prompts[i].text)
+    await call.message.answer(
+        f"✏️ Текущий текст:\n<code>{cur}</code>\n\n"
+        "Отправьте новый текст промта одним сообщением. /cancel — отмена."
     )
 
 
@@ -338,46 +431,6 @@ async def cb_settemp(call: CallbackQuery) -> None:
 # ---- кнопочный ввод: системный промт / температура / пароль -------------
 
 
-@router.callback_query(F.data == "ask_system")
-async def cb_ask_system(call: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(Form.system)
-    await call.answer()
-    await call.message.answer(
-        SYSTEM_EXPLAIN + "\n\n"
-        "➕ Отправьте текст промта одним сообщением — он <b>добавится</b> к "
-        "уже заданным (их можно несколько, они объединяются).\n"
-        "«<code>-</code>» — очистить все. /cancel — отмена."
-    )
-
-
-@router.callback_query(F.data == "clear_system")
-async def cb_clear_system(call: CallbackQuery) -> None:
-    session = get_session(call.from_user.id)
-    session.system_prompts = []
-    try:
-        await call.message.edit_text(
-            await _settings_text(call.from_user.id),
-            reply_markup=_settings_keyboard(session.temperature),
-        )
-    except TelegramBadRequest:
-        pass
-    await call.answer("Промты очищены")
-
-
-@router.callback_query(F.data == "toggle_tg")
-async def cb_toggle_tg(call: CallbackQuery) -> None:
-    session = get_session(call.from_user.id)
-    session.tg_format = not session.tg_format
-    try:
-        await call.message.edit_text(
-            await _settings_text(call.from_user.id),
-            reply_markup=_settings_keyboard(session.temperature),
-        )
-    except TelegramBadRequest:
-        pass
-    await call.answer("Формат Telegram: " + ("вкл" if session.tg_format else "выкл"))
-
-
 @router.callback_query(F.data == "ask_temp")
 async def cb_ask_temp(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(Form.temp)
@@ -408,18 +461,26 @@ async def cancel_input(message: Message, state: FSMContext) -> None:
 
 @router.message(StateFilter(Form.system), F.text & ~F.text.startswith("/"))
 async def on_system_input(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
     await state.clear()
     session = await active_session(message.from_user.id)
     text = message.text.strip()
-    if text == "-":
-        session.system_prompts = []
-        await message.answer("✅ Все системные промты очищены.")
-        return
-    session.system_prompts.append(text)
-    await message.answer(
-        f"✅ Промт добавлен (всего {len(session.system_prompts)}). "
-        "Можно добавить ещё через «➕ Добавить промт»."
-    )
+    edit_idx = data.get("edit_idx")
+
+    if edit_idx is not None and 0 <= edit_idx < len(session.prompts):
+        # Правка существующего промта.
+        session.prompts[edit_idx].text = text
+        if not session.prompts[edit_idx].preset:
+            session.prompts[edit_idx].name = ""
+        await message.answer("✅ Промт изменён.")
+    else:
+        # Добавление нового пользовательского промта.
+        session.prompts.append(Prompt(text=text, active=True))
+        await message.answer(
+            f"✅ Промт добавлен и активен (всего {len(session.prompts)}). "
+            "Управление — в ⚙️ Настройки → «📝 Промты»."
+        )
+    await _show_prompts_menu(message, message.from_user.id, edit=False)
 
 
 @router.message(StateFilter(Form.temp), F.text & ~F.text.startswith("/"))
@@ -541,26 +602,20 @@ async def on_key_input(message: Message, state: FSMContext) -> None:
 # ---- текстовые команды настройки ----------------------------------------
 
 
-@router.message(Command("system"))
+@router.message(Command("system", "prompts"))
 async def cmd_system(message: Message, state: FSMContext) -> None:
     session = await active_session(message.from_user.id)
     text = message.text.partition(" ")[2].strip()
     if not text:
-        # Без аргумента — запускаем кнопочный ввод.
-        await state.set_state(Form.system)
-        cur = html.escape(session.custom_text() or "(пусто)")
-        await message.answer(
-            SYSTEM_EXPLAIN + "\n\n"
-            f"Сейчас ({len(session.system_prompts)} шт.): <code>{cur}</code>\n\n"
-            "➕ Отправьте текст — он добавится. «<code>-</code>» — очистить все. /cancel — отмена."
-        )
+        # Без аргумента — открываем менеджер промтов.
+        await _show_prompts_menu(message, message.from_user.id, edit=False)
         return
-    if text == "-":
-        session.system_prompts = []
-        await message.answer("✅ Все системные промты очищены.")
-        return
-    session.system_prompts.append(text)
-    await message.answer(f"✅ Промт добавлен (всего {len(session.system_prompts)}).")
+    # С текстом — быстро добавляем новый промт.
+    session.prompts.append(Prompt(text=text, active=True))
+    await message.answer(
+        f"✅ Промт добавлен и активен (всего {len(session.prompts)}). "
+        "Управление — /prompts или ⚙️ Настройки → «📝 Промты»."
+    )
 
 
 @router.message(Command("temp"))

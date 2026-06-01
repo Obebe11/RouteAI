@@ -8,6 +8,7 @@ import base64
 import time
 from io import BytesIO
 
+import telegramify_markdown
 from aiogram import F, Router
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
@@ -125,22 +126,31 @@ async def _respond(message: Message, session: Session, user_content) -> None:
 
     session.add("assistant", acc)
 
-    # Финальный рендер: пробуем как Telegram HTML (модель форматирует тегами),
-    # при ошибке парсинга — обычный текст, чтобы сообщение точно ушло.
-    parts = split_message(acc, TG_LIMIT)
+    # Финальный рендер: модель пишет обычный markdown, конвертируем его в
+    # корректный Telegram MarkdownV2 (символьное форматирование). Если что-то
+    # пойдёт не так — отправляем обычным текстом, чтобы сообщение точно ушло.
+    md2 = None
     try:
-        await placeholder.edit_text(parts[0], parse_mode=ParseMode.HTML)
-    except TelegramBadRequest:
+        md2 = telegramify_markdown.markdownify(acc)
+    except Exception:  # noqa: BLE001
+        md2 = None
+
+    if md2 and len(md2) <= TG_LIMIT:
         try:
-            await placeholder.edit_text(parts[0], parse_mode=None)
+            await placeholder.edit_text(md2, parse_mode=ParseMode.MARKDOWN_V2)
+            return
         except TelegramBadRequest:
             pass
+
+    # Фолбэк: обычный текст (с разбивкой длинных ответов).
+    parts = split_message(acc, TG_LIMIT)
+    try:
+        await placeholder.edit_text(parts[0], parse_mode=None)
+    except TelegramBadRequest:
+        pass
     for extra in parts[1:]:
         await asyncio.sleep(0.4)
-        try:
-            await message.answer(extra, parse_mode=ParseMode.HTML)
-        except TelegramBadRequest:
-            await message.answer(extra, parse_mode=None)
+        await message.answer(extra, parse_mode=None)
 
 
 @router.message(F.text & ~F.text.startswith("/"))

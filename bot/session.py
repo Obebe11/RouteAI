@@ -11,35 +11,41 @@ from . import config
 # Мягкий предел числа сообщений, удерживаемых в памяти на сессию.
 _MEM_CAP = 200
 
-# Встроенный системный промт о форматировании сообщений в Telegram и языке
-# ответа. Включён по умолчанию (Session.tg_format = True). На английском.
+# Встроенный пресет-промт о форматировании (markdown) и языке ответа.
+# Модель пишет обычный markdown, бот конвертирует его в Telegram MarkdownV2.
 TG_FORMAT_PROMPT = (
-    "OUTPUT & LANGUAGE RULES (you are replying inside a Telegram chat):\n"
-    "1. Always reply in the SAME LANGUAGE the user writes in.\n"
-    "2. Telegram renders ONLY this formatting, written as HTML tags: "
-    "<b>bold</b>, <i>italic</i>, <u>underline</u>, <s>strikethrough</s>, "
-    "<tg-spoiler>spoiler</tg-spoiler>, <code>inline code</code>, "
-    "<pre>code block</pre>, <blockquote>quote</blockquote>, and links as "
-    "<a href=\"https://example.com\">text</a>.\n"
-    "3. Use ONLY those HTML tags for formatting. Do NOT use Markdown "
-    "(no **bold**, *italic*, _underline_, `code`, ``` fences, # headings, "
-    "> quotes, or [text](url) links) — Telegram does NOT parse Markdown here "
-    "and it will be shown as raw characters.\n"
-    "4. Telegram does NOT support headings, tables, or nested lists. For a "
-    "heading use a <b>bold line</b>; for lists start lines with • or 1.\n"
-    "5. In ordinary text you MUST escape these characters as HTML entities: "
-    "& as &amp;, < as &lt;, > as &gt; (do not escape inside real tags).\n"
-    "6. Keep messages clean and easy to read on a phone."
+    "Always reply in the SAME LANGUAGE the user writes in. "
+    "Format your answer with standard Markdown so it looks clean in a chat: "
+    "**bold**, *italic*, ~~strikethrough~~, `inline code`, fenced ``` code blocks ```, "
+    "bullet lists with '- ', numbered lists with '1. ', and [text](url) for links. "
+    "Do NOT use tables or HTML tags — they are not supported here. "
+    "Keep messages concise and easy to read on a phone screen."
 )
+TG_FORMAT_NAME = "📱 Формат Telegram + язык"
+
+
+@dataclass
+class Prompt:
+    """Системный промт в библиотеке: можно включать/выключать по отдельности."""
+    text: str
+    active: bool = True
+    preset: bool = False  # встроенный (нельзя удалить, можно вкл/выкл и править)
+    name: str = ""
+
+    def label(self) -> str:
+        base = self.name or (self.text[:40] + ("…" if len(self.text) > 40 else ""))
+        return ("✅ " if self.active else "⬜ ") + base
+
+
+def default_prompts() -> list[Prompt]:
+    return [Prompt(text=TG_FORMAT_PROMPT, active=True, preset=True, name=TG_FORMAT_NAME)]
 
 
 @dataclass
 class Session:
     model: str = config.DEFAULT_MODEL
-    # Пользовательские системные промты (могут комбинироваться несколько).
-    system_prompts: list[str] = field(default_factory=list)
-    # Встроенный промт о форматировании Telegram — включён по умолчанию.
-    tg_format: bool = True
+    # Библиотека промтов: каждый со своим флагом active.
+    prompts: list["Prompt"] = field(default_factory=default_prompts)
     temperature: float = 0.7
     messages: list[dict] = field(default_factory=list)
     # Если сессия загружена из сохранённого чата — его id и название.
@@ -55,16 +61,12 @@ class Session:
         return not self.messages
 
     def custom_text(self) -> str:
-        """Только пользовательские промты, объединённые (без TG-формата)."""
-        return "\n\n".join(p for p in self.system_prompts if p)
+        """Активные ПОЛЬЗОВАТЕЛЬСКИЕ промты (без пресетов) — для подкрепления."""
+        return "\n\n".join(p.text for p in self.prompts if p.active and not p.preset)
 
     def effective_system(self) -> str:
-        """Итоговый системный промт: TG-формат (если вкл) + пользовательские."""
-        parts: list[str] = []
-        if self.tg_format:
-            parts.append(TG_FORMAT_PROMPT)
-        parts.extend(p for p in self.system_prompts if p)
-        return "\n\n".join(parts)
+        """Итоговый системный промт: все активные промты, объединённые."""
+        return "\n\n".join(p.text for p in self.prompts if p.active)
 
 
 _sessions: dict[int, Session] = {}
@@ -111,9 +113,12 @@ def load_into_session(
     messages: list[dict],
 ) -> Session:
     """Загрузить сохранённый чат в текущую сессию."""
+    prompts = default_prompts()
+    if system_prompt:
+        prompts.append(Prompt(text=system_prompt, active=True, name="Из сохранённого чата"))
     s = Session(
         model=model,
-        system_prompts=[system_prompt] if system_prompt else [],
+        prompts=prompts,
         temperature=temperature,
         messages=list(messages),
         saved_chat_id=chat_id,
