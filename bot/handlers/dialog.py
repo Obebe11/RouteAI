@@ -11,9 +11,8 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 
 from .. import config
-from ..models_cache import RANDOM_MODEL_ID, pick_random_chat_model
 from ..openrouter import OpenRouterError
-from ..runtime import client, models_cache, user_api_key
+from ..runtime import client, user_api_key
 from ..session import Session
 from ..utils import clean_response, split_message, trim_history
 from .common import active_session
@@ -41,12 +40,6 @@ async def on_text(message: Message) -> None:
     session.add("user", message.text)
     payload = _build_messages(session)
 
-    # «Случайная модель» — выбираем реальную чат-модель на каждый запрос.
-    model = session.model
-    if model == RANDOM_MODEL_ID:
-        chosen = pick_random_chat_model(models_cache.snapshot())
-        model = chosen["id"] if chosen else config.DEFAULT_MODEL
-
     key = await user_api_key(user_id)
     placeholder = await message.answer("…")
     await message.bot.send_chat_action(message.chat.id, "typing")
@@ -72,7 +65,7 @@ async def on_text(message: Message) -> None:
 
     try:
         async for chunk in client.chat_stream(
-            model, payload, api_key=key, temperature=session.temperature
+            session.model, payload, api_key=key, temperature=session.temperature
         ):
             acc += chunk
             await flush()
