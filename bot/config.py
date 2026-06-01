@@ -1,0 +1,31 @@
+"""Конфигурация из .env."""
+
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+
+def _require(name: str) -> str:
+    val = os.getenv(name)
+    if not val:
+        raise RuntimeError(f"Не задана переменная окружения {name} (см. .env)")
+    return val
+
+
+BOT_TOKEN: str = _require("BOT_TOKEN")
+# Дефолтный ключ — общий для всех, кто не задал свой через /setkey.
+DEFAULT_OPENROUTER_KEY: str = _require("OPENROUTER_API_KEY")
+# Секрет для шифрования данных в БД (ключи юзеров, тексты сообщений).
+# Сгенерировать: python -c "import secrets; print(secrets.token_urlsafe(48))"
+ENCRYPTION_KEY: str = _require("ENCRYPTION_KEY")
+
+DB_PATH: str = os.getenv("DB_PATH", "orbot.db")
+# Как часто обновлять кэш списка free-моделей, в часах.
+MODELS_CACHE_TTL_HOURS: float = float(os.getenv("MODELS_CACHE_TTL_HOURS", "6"))
+# Сколько последних не-system сообщений отправлять модели.
+HISTORY_MAX_MESSAGES: int = int(os.getenv("HISTORY_MAX_MESSAGES", "20"))
+# Модель по умолчанию для новых чатов.
+DEFAULT_MODEL: str = os.getenv("DEFAULT_MODEL", "deepseek/deepseek-r1:free")
