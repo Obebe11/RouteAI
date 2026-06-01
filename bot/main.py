@@ -1,4 +1,4 @@
-"""Точка входа ORBot."""
+"""Точка входа RouterAi."""
 
 import asyncio
 import logging
