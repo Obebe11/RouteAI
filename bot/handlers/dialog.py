@@ -263,12 +263,16 @@ async def _respond_image(message: Message, session: Session) -> None:
     else:
         photo = raw
 
-    try:
-        await placeholder.delete()
-    except Exception:  # noqa: BLE001
-        pass
     caption = prompt if len(prompt) <= 200 else prompt[:197] + "…"
-    await message.answer_photo(photo, caption=caption)
+    try:
+        await message.answer_photo(photo, caption=caption)
+        try:
+            await placeholder.delete()
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception as exc:  # noqa: BLE001
+        log.error("answer_photo failed: %s", exc)
+        await placeholder.edit_text(f"⚠️ Не удалось отправить изображение: {exc}", parse_mode=None)
 
 
 @router.message(F.text & ~F.text.startswith("/"))
