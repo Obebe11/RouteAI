@@ -125,6 +125,14 @@ PINNED_MODELS: list[dict] = [
         "input_modalities": ["text", "image"],
         "use_chat_for_image": True,
     },
+    {
+        "id": "sourceful/riverflow-v2.5-fast:free",
+        "name": "Riverflow V2.5 Fast",
+        "context_length": 8192,
+        "output_modalities": ["image"],
+        "input_modalities": ["text", "image"],
+        "use_chat_for_image": True,
+    },
 ]
 
 
