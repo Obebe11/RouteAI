@@ -241,7 +241,16 @@ async def _respond_image(message: Message, session: Session) -> None:
     use_chat = model_info.get("use_chat_for_image", False)
 
     placeholder = await message.answer("🎨 Генерирую изображение…")
-    await message.bot.send_chat_action(message.chat.id, "upload_photo")
+
+    async def _keep_typing() -> None:
+        while True:
+            try:
+                await message.bot.send_chat_action(message.chat.id, "upload_photo")
+            except Exception:  # noqa: BLE001
+                pass
+            await asyncio.sleep(4)
+
+    typing_task = asyncio.create_task(_keep_typing())
     try:
         if use_chat:
             raw = await client.image_from_chat(session.model, prompt, api_key=key)
@@ -253,6 +262,8 @@ async def _respond_image(message: Message, session: Session) -> None:
     except Exception as exc:  # noqa: BLE001
         await placeholder.edit_text(f"⚠️ Ошибка генерации: {exc}", parse_mode=None)
         return
+    finally:
+        typing_task.cancel()
 
     # raw может быть http-URL или data:image/...;base64,...
     if raw.startswith("data:"):
