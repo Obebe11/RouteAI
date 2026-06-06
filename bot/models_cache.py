@@ -43,15 +43,23 @@ class ModelsCache:
             pass
 
     def _mark_new(self, models: list[dict]) -> None:
-        """Отмечает models как is_new и обновляет first_seen."""
+        """Отмечает models как is_new и обновляет first_seen.
+
+        🆕 ставится только моделям, которые появились ПОСЛЕ того как список уже
+        был известен (has_prior). На первом запуске (пустой JSON) все модели
+        инициализируются «старой» датой и не получают метку.
+        """
         now = time.time()
+        has_prior = bool(self._first_seen)
         changed = False
         for m in models:
             mid = m["id"]
             if mid not in self._first_seen:
-                self._first_seen[mid] = now
+                # Первый запуск → отмечаем как «давно известные», не NEW.
+                # Уже был список → модель новая, ставим текущее время.
+                self._first_seen[mid] = now if has_prior else (now - _NEW_MODEL_TTL - 1)
                 changed = True
-            m["is_new"] = (now - self._first_seen[mid]) < _NEW_MODEL_TTL
+            m["is_new"] = has_prior and (now - self._first_seen[mid]) < _NEW_MODEL_TTL
         if changed:
             self._save_first_seen()
 
