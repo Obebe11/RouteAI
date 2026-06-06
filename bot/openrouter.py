@@ -50,9 +50,7 @@ class OpenRouterClient:
             is_free_suffix = m.get("id", "").endswith(":free")
 
             if is_free_suffix:
-                # ":free" — явный бесплатный тариф OpenRouter (+ страховка по цене).
-                if nonzero:
-                    continue
+                pass  # суффикс :free — явная гарантия OpenRouter, цену не проверяем
             else:
                 # Без ":free" пускаем ТОЛЬКО чисто текстовые модели с нулевой ценой
                 # (owl-alpha и подобные cloaked-превью). Любой медиа-вывод
