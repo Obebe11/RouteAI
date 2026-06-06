@@ -18,8 +18,9 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from .. import config
+from ..models_cache import is_image_model
 from ..openrouter import OpenRouterError
-from ..runtime import client, user_api_key
+from ..runtime import client, models_cache, user_api_key
 from ..session import Session
 from ..utils import clean_response, split_message, trim_history
 from .common import active_session
@@ -228,10 +229,35 @@ async def cmd_debug(message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
+async def _respond_image(message: Message, session: Session) -> None:
+    """Call image generation API and send the resulting photo."""
+    prompt = message.text
+    key = await user_api_key(message.from_user.id)
+    placeholder = await message.answer("🎨 Генерирую изображение…")
+    await message.bot.send_chat_action(message.chat.id, "upload_photo")
+    try:
+        url = await client.image_generate(session.model, prompt, api_key=key)
+    except OpenRouterError as exc:
+        await placeholder.edit_text(_friendly_error(exc), parse_mode=None)
+        return
+    except Exception as exc:  # noqa: BLE001
+        await placeholder.edit_text(f"⚠️ Ошибка генерации: {exc}", parse_mode=None)
+        return
+    try:
+        await placeholder.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    caption = prompt if len(prompt) <= 200 else prompt[:197] + "…"
+    await message.answer_photo(url, caption=caption)
+
+
 @router.message(F.text & ~F.text.startswith("/"))
 async def on_text(message: Message) -> None:
     session = await active_session(message.from_user.id)
-    await _respond(message, session, message.text)
+    if is_image_model(session.model, models_cache.snapshot()):
+        await _respond_image(message, session)
+    else:
+        await _respond(message, session, message.text)
 
 
 def _strip_image(content) -> str:
@@ -266,8 +292,6 @@ async def on_photo(message: Message) -> None:
     ]
     await _respond(message, session, content)
 
-    # Приватность: убираем base64-картинку из памяти сессии после ответа,
-    # оставляя только текстовую пометку (в RAM картинка больше не висит).
     for m in session.messages:
         if m.get("role") == "user" and isinstance(m.get("content"), list):
             m["content"] = _strip_image(m["content"])

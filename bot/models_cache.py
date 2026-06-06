@@ -1,21 +1,59 @@
 """Кэш списка актуальных бесплатных моделей OpenRouter с обогащением uptime."""
 
 import asyncio
+import json
 import time
 
 from .openrouter import OpenRouterClient, OpenRouterError
 
 # Параллелизм запросов uptime, чтобы не упереться в rate-limit free-аккаунта.
 _UPTIME_CONCURRENCY = 6
+# Сколько дней модель считается «новой» и помечается 🆕.
+NEW_MODEL_DAYS = 7
+_NEW_MODEL_TTL = NEW_MODEL_DAYS * 86400
 
 
 class ModelsCache:
-    def __init__(self, client: OpenRouterClient, ttl_hours: float):
+    def __init__(self, client: OpenRouterClient, ttl_hours: float, first_seen_path: str = ""):
         self._client = client
         self._ttl = ttl_hours * 3600
         self._models: list[dict] = []
         self._fetched_at: float = 0.0
         self._lock = asyncio.Lock()
+        self._first_seen_path = first_seen_path
+        # {model_id: unix timestamp первого появления}
+        self._first_seen: dict[str, float] = self._load_first_seen()
+
+    def _load_first_seen(self) -> dict[str, float]:
+        if not self._first_seen_path:
+            return {}
+        try:
+            with open(self._first_seen_path, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def _save_first_seen(self) -> None:
+        if not self._first_seen_path:
+            return
+        try:
+            with open(self._first_seen_path, "w", encoding="utf-8") as f:
+                json.dump(self._first_seen, f)
+        except OSError:
+            pass
+
+    def _mark_new(self, models: list[dict]) -> None:
+        """Отмечает models как is_new и обновляет first_seen."""
+        now = time.time()
+        changed = False
+        for m in models:
+            mid = m["id"]
+            if mid not in self._first_seen:
+                self._first_seen[mid] = now
+                changed = True
+            m["is_new"] = (now - self._first_seen[mid]) < _NEW_MODEL_TTL
+        if changed:
+            self._save_first_seen()
 
     async def get(self, force: bool = False) -> list[dict]:
         """Список free-моделей (с uptime, отсортирован по убыванию), обновляя по TTL."""
@@ -34,6 +72,7 @@ class ModelsCache:
                     raise
                 return self._models
             await self._enrich_uptime(models)
+            self._mark_new(models)
             models.sort(key=lambda m: (m.get("uptime") is None, -(m.get("uptime") or 0)))
             self._models = models
             self._fetched_at = time.monotonic()
@@ -101,6 +140,15 @@ def is_chat_category(key: str) -> bool:
 
 def filter_by_category(models: list[dict], key: str) -> list[dict]:
     return [m for m in models if model_category(m) == key]
+
+
+def is_image_model(model_id: str, models: list[dict]) -> bool:
+    """True if the model outputs images but not text."""
+    for m in models:
+        if m["id"] == model_id:
+            out = set(m.get("output_modalities") or ["text"])
+            return "image" in out and "text" not in out
+    return False
 
 
 def category_counts(models: list[dict]) -> dict[str, int]:

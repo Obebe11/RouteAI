@@ -29,7 +29,7 @@ from ..models_cache import (
 )
 from ..openrouter import OpenRouterError
 from ..runtime import client, models_cache, user_api_key
-from ..session import Prompt, clear_passphrase, get_session, set_passphrase
+from ..session import Prompt, get_session
 from .common import active_session, persist_prompts
 
 
@@ -41,7 +41,6 @@ class Form(StatesGroup):
     """Состояния ожидания ввода значения после нажатия кнопки."""
     system = State()
     temp = State()
-    password = State()
 
 router = Router()
 
@@ -100,7 +99,8 @@ def _model_label(m: dict) -> str:
     up = m.get("uptime")
     suffix = f" {round(up)}%" if up is not None else ""
     eye = " 👁" if has_vision(m) else ""
-    return f"{emoji} {m['name']}{eye}{suffix}"
+    new = " 🆕" if m.get("is_new") else ""
+    return f"{emoji} {m['name']}{eye}{new}{suffix}"
 
 
 async def _all_models(target: Message) -> list[dict] | None:
@@ -282,10 +282,7 @@ def _settings_keyboard(active_temp: float) -> InlineKeyboardMarkup:
             temp_row,
             [InlineKeyboardButton(text="✏️ Своя температура", callback_data="ask_temp")],
             [InlineKeyboardButton(text="📝 Промты (вкл/выкл/правка)", callback_data="pmenu")],
-            [
-                InlineKeyboardButton(text="🔒 Пароль", callback_data="ask_password"),
-                InlineKeyboardButton(text="🔑 Свой ключ", callback_data="hint_key"),
-            ],
+            [InlineKeyboardButton(text="🔑 Свой ключ", callback_data="hint_key")],
         ]
     )
 
@@ -472,18 +469,7 @@ async def cb_ask_temp(call: CallbackQuery, state: FSMContext) -> None:
     )
 
 
-@router.callback_query(F.data == "ask_password")
-async def cb_ask_password(call: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(Form.password)
-    await call.answer()
-    await call.message.answer(
-        "🔒 <b>Пароль для шифрования сохранённых чатов</b> (zero-knowledge).\n"
-        "Отправьте пароль одним сообщением — его не знает даже сервер.\n"
-        "«<code>-</code>» — сбросить пароль. /cancel — отмена."
-    )
-
-
-@router.message(StateFilter(Form.system, Form.temp, Form.password), Command("cancel"))
+@router.message(StateFilter(Form.system, Form.temp), Command("cancel"))
 async def cancel_input(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("Отменено. Ничего не изменено.")
@@ -556,27 +542,6 @@ async def on_temp_input(message: Message, state: FSMContext) -> None:
     session.temperature = value
     await db.save_pref_temperature(message.from_user.id, value)
     await message.answer(f"✅ Температура → {value} ({_temp_word(value)})")
-
-
-@router.message(StateFilter(Form.password), F.text & ~F.text.startswith("/") & ~F.text.in_(BUTTON_LABELS))
-async def on_password_input(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    pwd = message.text.strip()
-    try:
-        await message.delete()
-    except Exception:
-        pass
-    if pwd == "-":
-        clear_passphrase(message.from_user.id)
-        await message.answer(
-            "🔓 Пароль сброшен. Новые /save шифруются общим ключом сервера."
-        )
-        return
-    set_passphrase(message.from_user.id, pwd)
-    await message.answer(
-        "🔐 Пароль принят (только в памяти). Теперь /save шифрует чат им — "
-        "без пароля его не прочитает никто, включая сервер."
-    )
 
 
 def _key_menu_keyboard(has_key: bool) -> InlineKeyboardMarkup:

@@ -23,6 +23,7 @@ DEFAULT_OPENROUTER_KEY: str = _require("OPENROUTER_API_KEY")
 ENCRYPTION_KEY: str = _require("ENCRYPTION_KEY")
 
 DB_PATH: str = os.getenv("DB_PATH", "orbot.db")
+FIRST_SEEN_PATH: str = os.getenv("FIRST_SEEN_PATH", "models_first_seen.json")
 # TTL кэша моделей (часы). Основное обновление — ночным планировщиком;
 # этот TTL лишь страхует от устаревания, если планировщик не сработал.
 MODELS_CACHE_TTL_HOURS: float = float(os.getenv("MODELS_CACHE_TTL_HOURS", "25"))

@@ -6,7 +6,7 @@ import os
 import aiosqlite
 
 from . import config
-from .crypto import decrypt, decrypt_with, encrypt, encrypt_with
+from .crypto import decrypt, encrypt
 
 
 def _content_to_text(content) -> str:
@@ -195,35 +195,25 @@ class DB:
         temperature: float,
         messages: list[dict],
         chat_id: int | None = None,
-        fernet=None,
-        salt: str | None = None,
-        verifier: str | None = None,
     ) -> int:
-        """Сохранить разговор как чат. Если chat_id задан — перезаписать его.
-
-        Если передан fernet — чат шифруется пользовательским паролем (locked),
-        иначе общим ключом сервера.
-        """
-        locked = 1 if fernet is not None else 0
+        """Сохранить разговор как чат. Если chat_id задан — перезаписать его."""
         if chat_id is not None:
             await self.conn.execute(
-                "UPDATE chats SET title=?, model=?, system_prompt=?, temperature=?, "
-                "locked=?, salt=?, verifier=? WHERE id=? AND user_id=?",
-                (title, model, system_prompt, temperature, locked, salt, verifier,
-                 chat_id, user_id),
+                "UPDATE chats SET title=?, model=?, system_prompt=?, temperature=? "
+                "WHERE id=? AND user_id=?",
+                (title, model, system_prompt, temperature, chat_id, user_id),
             )
             await self.conn.execute("DELETE FROM messages WHERE chat_id=?", (chat_id,))
         else:
             cur = await self.conn.execute(
-                "INSERT INTO chats(user_id, title, model, system_prompt, temperature, "
-                "locked, salt, verifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (user_id, title, model, system_prompt, temperature, locked, salt, verifier),
+                "INSERT INTO chats(user_id, title, model, system_prompt, temperature) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (user_id, title, model, system_prompt, temperature),
             )
             chat_id = cur.lastrowid
-        enc = (lambda t: encrypt_with(fernet, t)) if fernet is not None else encrypt
         await self.conn.executemany(
             "INSERT INTO messages(chat_id, role, content) VALUES (?, ?, ?)",
-            [(chat_id, m["role"], enc(_content_to_text(m["content"]))) for m in messages],
+            [(chat_id, m["role"], encrypt(_content_to_text(m["content"]))) for m in messages],
         )
         await self.conn.commit()
         return chat_id
@@ -235,14 +225,13 @@ class DB:
 
     # ---- messages --------------------------------------------------------
 
-    async def get_messages(self, chat_id: int, fernet=None) -> list[dict]:
+    async def get_messages(self, chat_id: int) -> list[dict]:
         cur = await self.conn.execute(
             "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id",
             (chat_id,),
         )
-        dec = (lambda v: decrypt_with(fernet, v)) if fernet is not None else decrypt
         return [
-            {"role": r["role"], "content": dec(r["content"]) or ""}
+            {"role": r["role"], "content": decrypt(r["content"]) or ""}
             for r in await cur.fetchall()
         ]
 

@@ -5,7 +5,7 @@ from .models_cache import ModelsCache
 from .openrouter import OpenRouterClient
 
 client = OpenRouterClient(config.DEFAULT_OPENROUTER_KEY)
-models_cache = ModelsCache(client, config.MODELS_CACHE_TTL_HOURS)
+models_cache = ModelsCache(client, config.MODELS_CACHE_TTL_HOURS, config.FIRST_SEEN_PATH)
 
 
 async def user_api_key(user_id: int) -> str | None:

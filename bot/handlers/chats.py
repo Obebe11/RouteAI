@@ -13,17 +13,12 @@ from aiogram.types import (
     Message,
 )
 
-from .. import crypto
 from ..db import db
 from ..keyboards import BTN_HELP, BTN_NEW, BTN_SAVE, BTN_SAVED, main_menu
-from .settings import Form
 from ..session import (
-    clear_passphrase,
-    get_passphrase,
     get_session,
     load_into_session,
     reset_session,
-    set_passphrase,
 )
 
 router = Router()
@@ -36,16 +31,14 @@ _HELP = (
     "/new — начать новый временный разговор\n"
     "/save &lt;название&gt; — сохранить текущий разговор\n"
     "/saved — список сохранённых чатов (загрузить/удалить)\n"
-    "/reset — очистить текущий разговор\n"
-    "/password &lt;пароль&gt; — шифровать сохранённые чаты своим паролем "
-    "🔒 (его не знает даже сервер); /password - сбросить\n\n"
+    "/reset — очистить текущий разговор\n\n"
     "<b>Настройки</b>\n"
     "/models — выбрать модель (🟢≥95% 🟡80–95% 🔴&lt;80% по аптайму)\n"
     "/system &lt;текст&gt; — системный промт (как модель себя ведёт)\n"
     "/temp &lt;0–2&gt; — температура (точность ↔ творческость ответов)\n"
     "/setkey &lt;ключ&gt; — свой OpenRouter-ключ\n\n"
     "Просто напишите сообщение — отвечает активная модель.\n"
-    "Внизу есть кнопки для быстрого доступа к действиям.\n\n"
+    "Модели генерации картинок: выберите из категории 🖼 и отправьте текстовый запрос.\n\n"
     "📣 Новости и анонсы — в моём "
     "<a href=\"https://t.me/obebi4\">Telegram-канале</a>.\n"
     "💻 Исходный код проекта открыт на "
@@ -80,36 +73,6 @@ async def cmd_new(message: Message, state: FSMContext) -> None:
 # ---- сохранение ----------------------------------------------------------
 
 
-@router.message(Command("password"))
-async def cmd_password(message: Message, state: FSMContext) -> None:
-    arg = message.text.partition(" ")[2].strip()
-    if not arg:
-        # Без аргумента — кнопочный ввод (как с ключом).
-        await state.set_state(Form.password)
-        await message.answer(
-            "🔒 <b>Пароль для шифрования сохранённых чатов</b> (zero-knowledge).\n"
-            "Отправьте пароль одним сообщением — его не знает даже сервер.\n"
-            "«<code>-</code>» — сбросить пароль. /cancel — отмена."
-        )
-        return
-    # Пароль передан прямо в команде — удаляем сообщение.
-    try:
-        await message.delete()
-    except Exception:
-        pass
-    if arg == "-":
-        clear_passphrase(message.from_user.id)
-        await message.answer(
-            "🔓 Пароль сброшен (из памяти). Новые /save шифруются общим ключом сервера."
-        )
-        return
-    set_passphrase(message.from_user.id, arg)
-    await message.answer(
-        "🔐 Пароль принят (только в памяти). Теперь /save шифрует чат им — "
-        "без него его не прочитает никто, включая владельца сервера."
-    )
-
-
 @router.message(Command("save"))
 @router.message(F.text == BTN_SAVE)
 async def cmd_save(message: Message, state: FSMContext) -> None:
@@ -125,14 +88,6 @@ async def cmd_save(message: Message, state: FSMContext) -> None:
     if not title:
         title = session.saved_title or f"Чат {datetime.now():%d.%m %H:%M}"
 
-    # Если задан пароль — шифруем чат ключом из него (zero-knowledge).
-    passphrase = get_passphrase(message.from_user.id)
-    fernet = salt = verifier = None
-    if passphrase:
-        salt = crypto.new_salt()
-        fernet = crypto.derive_fernet(passphrase, salt)
-        verifier = crypto.make_verifier(fernet)
-
     was_update = session.saved_chat_id is not None
     chat_id = await db.save_session(
         message.from_user.id,
@@ -142,16 +97,12 @@ async def cmd_save(message: Message, state: FSMContext) -> None:
         session.temperature,
         session.messages,
         chat_id=session.saved_chat_id,
-        fernet=fernet,
-        salt=salt,
-        verifier=verifier,
     )
     session.saved_chat_id = chat_id
     session.saved_title = title
     verb = "обновлён" if was_update else "сохранён"
-    lock_note = " 🔒 под паролем" if passphrase else ""
     await message.answer(
-        f"💾 Разговор {verb} как «{html.escape(title)}»{lock_note} "
+        f"💾 Разговор {verb} как «{html.escape(title)}» "
         f"({len(session.messages)} сообщ.). Открыть позже — /saved."
     )
 
@@ -163,10 +114,9 @@ def _saved_keyboard(chats: list, active_id: int | None) -> InlineKeyboardMarkup:
     rows = []
     for c in chats:
         mark = "✅ " if c["id"] == active_id else ""
-        lock = "🔒 " if c["locked"] else ""
         rows.append([
             InlineKeyboardButton(
-                text=f"{mark}{lock}{c['title']} · {c['model'].split('/')[-1]}",
+                text=f"{mark}{c['title']} · {c['model'].split('/')[-1]}",
                 callback_data=f"load:{c['id']}",
             ),
             InlineKeyboardButton(text="🗑", callback_data=f"del:{c['id']}"),
@@ -200,26 +150,7 @@ async def cb_load(call: CallbackQuery) -> None:
         await call.answer("Чат не найден.", show_alert=True)
         return
 
-    fernet = None
-    if chat["locked"]:
-        passphrase = get_passphrase(call.from_user.id)
-        if not passphrase:
-            await call.answer()
-            await call.message.answer(
-                f"🔒 Чат «{html.escape(chat['title'])}» защищён паролем. Введите его "
-                "командой <code>/password ваш-пароль</code> и снова откройте чат."
-            )
-            return
-        fernet = crypto.derive_fernet(passphrase, chat["salt"])
-        if not crypto.check_verifier(fernet, chat["verifier"]):
-            await call.answer()
-            await call.message.answer(
-                "❌ Неверный пароль для этого чата. Задайте правильный через "
-                "<code>/password ...</code> и попробуйте снова."
-            )
-            return
-
-    messages = await db.get_messages(chat_id, fernet=fernet)
+    messages = await db.get_messages(chat_id)
     load_into_session(
         call.from_user.id,
         chat_id,

@@ -86,22 +86,6 @@ class Session:
 
 _sessions: dict[int, Session] = {}
 
-# Пароли пользователей для шифрования сохранённых чатов. Хранятся ТОЛЬКО в
-# памяти процесса, в БД не пишутся и пропадают при перезапуске бота.
-_passphrases: dict[int, str] = {}
-
-
-def set_passphrase(user_id: int, passphrase: str) -> None:
-    _passphrases[user_id] = passphrase
-
-
-def clear_passphrase(user_id: int) -> None:
-    _passphrases.pop(user_id, None)
-
-
-def get_passphrase(user_id: int) -> str | None:
-    return _passphrases.get(user_id)
-
 
 def get_session(user_id: int) -> Session:
     s = _sessions.get(user_id)
