@@ -49,14 +49,8 @@ class OpenRouterClient:
             out = set((m.get("architecture") or {}).get("output_modalities") or ["text"])
             is_free_suffix = m.get("id", "").endswith(":free")
 
-            if is_free_suffix:
-                pass  # суффикс :free — явная гарантия OpenRouter, цену не проверяем
-            else:
-                # Без ":free" пускаем ТОЛЬКО чисто текстовые модели с нулевой ценой
-                # (owl-alpha и подобные cloaked-превью). Любой медиа-вывод
-                # (audio/image/video) = потенциальная плата → исключаем.
-                if out - {"text"} or nonzero:
-                    continue
+            if not is_free_suffix and nonzero:
+                continue
             free.append(m)
 
         result = [
