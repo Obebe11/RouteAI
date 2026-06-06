@@ -51,6 +51,10 @@ class OpenRouterClient:
 
             if not is_free_suffix and nonzero:
                 continue
+            # Аудио-вывод не поддерживается ботом — исключаем.
+            out_list = (m.get("architecture") or {}).get("output_modalities") or ["text"]
+            if "audio" in out_list:
+                continue
             free.append(m)
 
         result = [
