@@ -117,6 +117,43 @@ class OpenRouterClient:
                 return float(val)
         return None
 
+    async def image_from_chat(
+        self,
+        model: str,
+        prompt: str,
+        api_key: str | None = None,
+    ) -> str:
+        """Generate image via chat completions (models that return images in message.images).
+        Returns a data URL or http URL."""
+        key = self._resolve_key(api_key)
+        headers = {
+            **self._auth_headers(key),
+            "HTTP-Referer": "https://github.com/Obebe11/RouteAI",
+            "X-Title": "RouterAi",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=120.0, headers=headers) as c:
+                resp = await c.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    json={"model": model, "messages": [{"role": "user", "content": prompt}]},
+                )
+        except httpx.HTTPError as exc:
+            raise OpenRouterError(str(exc)) from exc
+        if resp.status_code != 200:
+            raise OpenRouterError(f"{resp.status_code}: {resp.text}")
+        choices = resp.json().get("choices") or []
+        if not choices:
+            raise OpenRouterError("No choices in response")
+        msg = (choices[0].get("message") or {})
+        images = msg.get("images") or []
+        if not images:
+            raise OpenRouterError("No images in chat response")
+        url = (images[0].get("image_url") or {}).get("url")
+        if not url:
+            raise OpenRouterError("No image URL in response")
+        return url
+
     async def image_generate(
         self,
         model: str,

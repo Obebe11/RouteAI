@@ -231,24 +231,44 @@ async def cmd_debug(message: Message) -> None:
 
 async def _respond_image(message: Message, session: Session) -> None:
     """Call image generation API and send the resulting photo."""
+    import base64
+    from aiogram.types import BufferedInputFile
+
     prompt = message.text
     key = await user_api_key(message.from_user.id)
+    snapshot = models_cache.snapshot()
+    model_info = next((m for m in snapshot if m["id"] == session.model), {})
+    use_chat = model_info.get("use_chat_for_image", False)
+
     placeholder = await message.answer("🎨 Генерирую изображение…")
     await message.bot.send_chat_action(message.chat.id, "upload_photo")
     try:
-        url = await client.image_generate(session.model, prompt, api_key=key)
+        if use_chat:
+            raw = await client.image_from_chat(session.model, prompt, api_key=key)
+        else:
+            raw = await client.image_generate(session.model, prompt, api_key=key)
     except OpenRouterError as exc:
         await placeholder.edit_text(_friendly_error(exc), parse_mode=None)
         return
     except Exception as exc:  # noqa: BLE001
         await placeholder.edit_text(f"⚠️ Ошибка генерации: {exc}", parse_mode=None)
         return
+
+    # raw может быть http-URL или data:image/...;base64,...
+    if raw.startswith("data:"):
+        header, b64 = raw.split(",", 1)
+        img_bytes = base64.b64decode(b64)
+        ext = "webp" if "webp" in header else "png"
+        photo = BufferedInputFile(img_bytes, filename=f"image.{ext}")
+    else:
+        photo = raw
+
     try:
         await placeholder.delete()
     except Exception:  # noqa: BLE001
         pass
     caption = prompt if len(prompt) <= 200 else prompt[:197] + "…"
-    await message.answer_photo(url, caption=caption)
+    await message.answer_photo(photo, caption=caption)
 
 
 @router.message(F.text & ~F.text.startswith("/"))

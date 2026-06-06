@@ -80,6 +80,11 @@ class ModelsCache:
                     raise
                 return self._models
             await self._enrich_uptime(models)
+            # Добавляем пинованные модели, которых нет в API.
+            existing = {m["id"] for m in models}
+            for pm in PINNED_MODELS:
+                if pm["id"] not in existing:
+                    models.append(dict(pm))
             self._mark_new(models)
             models.sort(key=lambda m: (m.get("uptime") is None, -(m.get("uptime") or 0)))
             self._models = models
@@ -108,6 +113,19 @@ class ModelsCache:
 # бесплатную модель. Закреплена вверху списка выбора.
 RANDOM_MODEL_ID = "openrouter/free"
 RANDOM_MODEL_LABEL = "🎲 Случайная модель"
+
+# Модели, не появляющиеся в /api/v1/models, но реально работающие.
+# use_chat_for_image=True — используют chat completions вместо /images/generations.
+PINNED_MODELS: list[dict] = [
+    {
+        "id": "sourceful/riverflow-v2.5-pro:free",
+        "name": "Riverflow V2.5 Pro",
+        "context_length": 8192,
+        "output_modalities": ["image"],
+        "input_modalities": ["text", "image"],
+        "use_chat_for_image": True,
+    },
+]
 
 
 # Категории моделей: (ключ, подпись для кнопки/заголовка). Порядок = порядок показа.
