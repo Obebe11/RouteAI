@@ -214,7 +214,11 @@ async def cb_refresh_models(call: CallbackQuery) -> None:
     except OpenRouterError as exc:
         await call.message.answer(f"Не удалось обновить список моделей: {exc}")
         return
-    await _show_categories(call.message, edit=True)
+    try:
+        await _show_categories(call.message, edit=True)
+    except TelegramBadRequest:
+        # Список не изменился — Telegram запрещает edit_text с тем же текстом.
+        pass
 
 
 @router.callback_query(F.data == "pickrandom")

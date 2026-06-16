@@ -87,10 +87,15 @@ class ModelsCache:
                     raise
                 return self._models
             await self._enrich_uptime(models)
-            # Добавляем пинованные модели, которых нет в API.
+            # Добавляем пинованные модели, которых нет в API — но только если
+            # OpenRouter всё ещё отдаёт по ним живой эндпоинт. Раньше модели
+            # добавлялись безусловно и оставались в боте даже после того, как
+            # провайдер их отключал.
             existing = {m["id"] for m in models}
             for pm in PINNED_MODELS:
-                if pm["id"] not in existing:
+                if pm["id"] in existing:
+                    continue
+                if await self._client.endpoint_exists(pm["id"]):
                     models.append(dict(pm))
             self._mark_new(models)
             models.sort(key=lambda m: (m.get("uptime") is None, -(m.get("uptime") or 0)))

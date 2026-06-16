@@ -117,6 +117,32 @@ class OpenRouterClient:
                 return float(val)
         return None
 
+    async def endpoint_exists(self, model_id: str, api_key: str | None = None) -> bool:
+        """True если у модели сейчас есть хотя бы один живой эндпоинт на OpenRouter.
+
+        Используется для PINNED_MODELS — захардкоженных моделей, не приходящих
+        в /api/v1/models, чтобы не показывать их вечно после того, как
+        OpenRouter их снял. При сетевой ошибке или неопределённом статусе
+        считаем модель живой, чтобы не удалить её по временному сбою —
+        удаляем только при явном 404 или пустом списке эндпоинтов.
+        """
+        key = self._resolve_key(api_key)
+        try:
+            async with httpx.AsyncClient(
+                timeout=20.0, headers=self._auth_headers(key)
+            ) as client:
+                resp = await client.get(
+                    f"https://openrouter.ai/api/v1/models/{model_id}/endpoints"
+                )
+        except httpx.HTTPError:
+            return True
+        if resp.status_code == 404:
+            return False
+        if resp.status_code != 200:
+            return True
+        data = (resp.json() or {}).get("data") or {}
+        return bool(data.get("endpoints"))
+
     async def image_from_chat(
         self,
         model: str,
