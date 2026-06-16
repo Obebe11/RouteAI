@@ -23,7 +23,7 @@ from ..openrouter import OpenRouterError
 from ..runtime import client, models_cache, user_api_key
 from ..session import Session
 from ..utils import clean_response, split_message, trim_history
-from .common import active_session
+from .common import active_session, ensure_model_still_free
 
 router = Router()
 log = logging.getLogger("routeai.dialog")
@@ -289,6 +289,7 @@ async def _respond_image(message: Message, session: Session) -> None:
 @router.message(F.text & ~F.text.startswith("/"))
 async def on_text(message: Message) -> None:
     session = await active_session(message.from_user.id)
+    await ensure_model_still_free(message, session)
     if is_image_model(session.model, models_cache.snapshot()):
         await _respond_image(message, session)
     else:
@@ -310,6 +311,7 @@ def _strip_image(content) -> str:
 @router.message(F.photo)
 async def on_photo(message: Message) -> None:
     session = await active_session(message.from_user.id)
+    await ensure_model_still_free(message, session)
 
     # Скачиваем самое крупное превью фото В ПАМЯТЬ. На диск/сервер не пишем,
     # сообщение в чате НЕ удаляем — оно остаётся у пользователя.

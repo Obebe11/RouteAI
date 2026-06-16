@@ -60,6 +60,13 @@ class ModelsCache:
                 self._first_seen[mid] = now if has_prior else (now - _NEW_MODEL_TTL - 1)
                 changed = True
             m["is_new"] = has_prior and (now - self._first_seen[mid]) < _NEW_MODEL_TTL
+        # Чистим записи моделей, которых больше нет в списке (иначе first_seen
+        # растёт бесконечно, а вернувшаяся модель не получит метку 🆕 заново).
+        stale = self._first_seen.keys() - {m["id"] for m in models}
+        if stale:
+            for mid in stale:
+                del self._first_seen[mid]
+            changed = True
         if changed:
             self._save_first_seen()
 
