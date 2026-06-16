@@ -126,6 +126,7 @@ def _categories_keyboard(counts: dict[str, int]) -> InlineKeyboardMarkup:
         for key, label in CATEGORIES
         if counts.get(key, 0) > 0
     ]
+    rows.append([InlineKeyboardButton(text="🔄 Обновить список", callback_data="refresh_models")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -203,6 +204,17 @@ async def cmd_models(message: Message, state: FSMContext) -> None:
 async def cb_categories(call: CallbackQuery) -> None:
     await _show_categories(call.message, edit=True)
     await call.answer()
+
+
+@router.callback_query(F.data == "refresh_models")
+async def cb_refresh_models(call: CallbackQuery) -> None:
+    await call.answer("Обновляю список моделей…")
+    try:
+        await models_cache.refresh()
+    except OpenRouterError as exc:
+        await call.message.answer(f"Не удалось обновить список моделей: {exc}")
+        return
+    await _show_categories(call.message, edit=True)
 
 
 @router.callback_query(F.data == "pickrandom")
